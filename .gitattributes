@@ -1,0 +1,6 @@
+*.p8 text eol=lf
+*.p8.png binary
+*.png binary
+
+# Do not include backup files in archives
+backup/** export-ignore

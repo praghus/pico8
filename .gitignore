@@ -1,0 +1,19 @@
+# Pico-8 repo ignores
+backup/
+cdata/
+cstore/
+plates/
+
+# logs and editor/runtime files
+*.log
+activity_log.txt
+config.txt
+log.txt
+sdl_controllers.txt
+last_run.p8
+
+# temporary / backup files
+*.tmp
+*.bak
+
+# keep carts tracked (do not ignore .p8 in carts/)
