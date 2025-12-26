@@ -5,9 +5,12 @@ __lua__
 -- by praghus
 ------------------------------------------------------------------------------
 cartdata("blob_best_times") -- initialize cartdata storage for best times
+-- poke(0x5f2e, 1)
+-- pal(0, 129, 1)
 
 -- CORE GAME STATE ----------------------------------------------------------
 t = 0
+music_on = false
 game_state = "title" -- "title", "playing", "won", "lost"
 firstinit = true
 immortal = false -- debug mode to prevent falling off
@@ -20,9 +23,11 @@ level_time = 0 -- time counter for current level in seconds
 level_cleared = false
 level_cleared_timer = 0
 level_transition = false
-level_transition_timer = 0
 level_transition_direction = 0 -- -1 for left, 1 for right
-level_skip = true -- enable level skipping with Z+arrows
+level_transition_new_anims = {}
+level_transition_phase = "slide"
+level_transition_offset = 0
+-- level_transition_direction defined earlier
 
 -- MAP STATE -----------------------------------------------------------------
 map_width = 8
@@ -42,10 +47,10 @@ teleport1_bg_sprite = 40
 teleport2_bg_sprite = 38
 palette = {
     [0] = { 0, 1, 2, 1, 2, 8 },
-    [1] = { 0, 1, 5, 1, 5 },
-    [2] = { 0, 1, 4, 1, 4 },
-    [3] = { 0, 1, 3, 1, 3 },
-    [4] = { 0, 1, 2, 1, 2 }
+    [1] = { 0, 1, 1, 1, 1, 13 },
+    [2] = { 0, 1, 1, 1, 1, 12 },
+    [3] = { 0, 1, 3, 1, 3, 11 },
+    [4] = { 0, 1, 2, 1, 2, 14 }
 }
 
 -- CAMERA & EFFECTS ----------------------------------------------------------
@@ -53,38 +58,25 @@ cam_x = 0
 cam_y = 0
 shake_timer = 0
 shake_intensity = 0
+
+-- PARTICLES -------------------------------------------------------------------
 particles = {}
 max_particles = 140 -- safety cap for particles to avoid FPS drops
-progress_flash = 0
-
--- AUDIO ----------------------------------------------------------------------
-music_on = false
 
 -- UI STATE -------------------------------------------------------------------
--- leaderboard
 show_leaderboard = false
-leaderboard_anim = 0
-
--- title screen menu
 title_menu_index = 1
-reset_feedback = false
-reset_feedback_timer = 0
-
--- title logo animation
 title_fade = 0
 title_drop_y = -40
 title_drop_vy = 0
 title_bounce_done = false
-title_text_timer = 0
-
--- ANIMATIONS -----------------------------------------------------------------
--- record/best time display
+title_anim_timer = 0
+leaderboard_anim = 0
+progress_flash = 0
 record_anim_stage = 0
 record_anim_timer = 0
 record_anim_x = 0
 record_anim_height = 2
-
--- tile respawn effect
 tile_respawn_anims = {}
 tile_respawn_active = false
 
@@ -98,9 +90,11 @@ function _init()
     menuitem(1, "music: " .. (music_on and "on" or "off"), toggle_music)
     menuitem(2, "back to title", return_to_title)
 
+    set_default_palette()
+    cls(0)
+
     -- game initialization - only on first run
     if firstinit then
-        cls()
         current_level = 1
         game_state = "title"
         if music_on then
@@ -113,18 +107,16 @@ function _init()
         return
     end
 
-    cls(0)
-
-    game_state = "playing"
-
     -- create working copy of level
     reset_map()
 
-    -- create player at start position (tile id 4 converted to platform id 5 in reset_map)
+    -- create player at start position
     player = create_player(start_x, start_y)
 
     -- variable to control input at jump peak
     init_player_flags(player)
+
+    game_state = "playing"
 
     -- reset level time
     level_time = 0
@@ -147,10 +139,7 @@ end
 
 function _update()
     t += 0.01
-
-    -- update common timers and effects
     update_common_effects()
-
     -- state-specific updates
     if game_state == "title" then
         update_title_state()
@@ -164,18 +153,15 @@ function _update()
 end
 
 function _draw()
-    -- apply camera shake
+    if game_state == "title" then
+        draw_title_screen()
+        return
+    end
+
     local shake_x, shake_y = 0, 0
     if shake_timer > 0 then
         shake_x = rnd(shake_intensity) - shake_intensity / 2
         shake_y = rnd(shake_intensity) - shake_intensity / 2
-    end
-
-    -- reset camera for background
-
-    if game_state == "title" then
-        draw_title_screen()
-        return
     end
 
     camera(0, 0)
@@ -184,102 +170,15 @@ function _draw()
     draw_board()
     draw_particles(false)
 
-    local showing_messages = (level_cleared and level_cleared_timer < 5)
-            or game_state == "won"
-            or game_state == "lost"
-            or record_anim_stage > 0
-
-    if player and not level_cleared and not level_transition and not showing_messages then
+    if is_player_visible(player) then
         draw_player(player, shake_x + cam_x, shake_y + cam_y)
     end
 
     -- reset camera for UI
     camera(0, 0)
     draw_gui()
-    -- UI particles
     draw_particles(true)
     draw_messages()
-end
-
--- update common visual effects and timers
-function update_common_effects()
-    -- progress flash effect
-    if progress_flash > 0 then
-        progress_flash -= 0.32
-        if progress_flash < 0 then progress_flash = 0 end
-    end
-
-    -- camera shake
-    if shake_timer > 0 then
-        shake_timer -= 1
-    end
-
-    -- animations
-    update_record_animation()
-    update_tile_respawn_animations()
-
-    -- reset feedback timer
-    if reset_feedback and reset_feedback_timer < 1.5 then
-        reset_feedback_timer += 1 / 30 -- 30fps
-        if reset_feedback_timer >= 1.5 then
-            reset_feedback = false
-        end
-    end
-end
-
--- handle title screen state
-function update_title_state()
-    -- leaderboard animation
-    if show_leaderboard and leaderboard_anim < 1 then
-        leaderboard_anim = min(1, leaderboard_anim + 0.08)
-    elseif not show_leaderboard and leaderboard_anim > 0 then
-        leaderboard_anim = max(0, leaderboard_anim - 0.12)
-    end
-    -- reset records (Z+X)
-    if show_leaderboard and btn(4) and btnp(5) then
-        reset_all_best_times()
-    end
-
-    -- ensure menu index exists
-    if not title_menu_index then title_menu_index = 1 end
-
-    -- when leaderboard visible, allow closing it with O (btnp(3)) or X (btnp(5))
-    if show_leaderboard then
-        -- close leaderboard with O (btnp(3))
-        if btnp(3) then
-            show_leaderboard = false
-            return
-        end
-        -- close leaderboard with X (btnp(5)) if not holding modifier (btn(4))
-        if btnp(5) and not btn(4) then
-            show_leaderboard = false
-            return
-        end
-    end
-
-    -- title navigation when leaderboard hidden
-    if not show_leaderboard then
-        -- navigate title menu with up/down
-        if btnp(2) then
-            title_menu_index = max(1, title_menu_index - 1)
-        elseif btnp(3) then
-            title_menu_index = min(3, title_menu_index + 1)
-        end
-
-        -- confirm/activate selection with X (btnp(5))
-        if btnp(5) and not btn(4) then
-            if title_menu_index == 1 then
-                -- start
-                start_game()
-            elseif title_menu_index == 2 then
-                -- toggle music
-                toggle_music()
-            elseif title_menu_index == 3 then
-                -- show leaderboard
-                show_leaderboard = true
-            end
-        end
-    end
 end
 
 -- HELPER FUNCTIONS FOR STATE MANAGEMENT ------------------------------------
@@ -294,8 +193,6 @@ function reset_all_best_times()
         best_times[i] = nil
     end
     save_best_times()
-    reset_feedback = true
-    reset_feedback_timer = 0
 end
 
 function toggle_music()
@@ -328,7 +225,7 @@ function restart_game()
     title_drop_y = -40
     title_drop_vy = 0
     title_bounce_done = false
-    title_text_timer = 0
+    title_anim_timer = 0
 end
 
 function handle_level_completion()
@@ -344,7 +241,22 @@ function handle_level_completion()
     end
 end
 
-function handle_level_skip_input()
+function handle_player_input()
+    if btn(0) then
+        player.buffered_dir = 0
+        player.input_buffered = true
+    elseif btn(1) then
+        player.buffered_dir = 1
+        player.input_buffered = true
+    elseif btn(2) then
+        player.buffered_dir = 2
+        player.input_buffered = true
+    elseif btn(3) then
+        player.buffered_dir = 3
+        player.input_buffered = true
+    else
+        player.input_buffered = false
+    end
     if btn(4) and btnp(1) then
         set_level(current_level + 1)
     elseif btn(4) and btnp(0) then
@@ -352,44 +264,168 @@ function handle_level_skip_input()
     end
 end
 
+-- UPDATE FUNCTIONS ---------------------------------------------------------
 function update_level_transition()
-    level_transition_timer += 0.08
-    if level_transition_timer < 1 then return end
+    -- center camera during transition
+    cam_x = 0
+    cam_y = 0
 
-    level_transition = false
-    current_level = next_level
-    _init()
+    if level_transition_phase == "slide" then
+        level_transition_offset = lerp(level_transition_offset, 128 * level_transition_direction, 0.8)
+        if abs(level_transition_offset - 128 * level_transition_direction) < 0.5 then
+            level_transition_phase = "fall"
+        end
+    elseif level_transition_phase == "fall" then
+        local all_new_finished = true
+        for anim in all(level_transition_new_anims) do
+            anim.timer += 1 / 30
+            if anim.timer >= 0 then
+                anim.current_y = lerp(anim.current_y, anim.end_y, 0.2)
+                if abs(anim.current_y - anim.end_y) > 1 then
+                    all_new_finished = false
+                end
+            else
+                all_new_finished = false
+            end
+        end
+        if all_new_finished then
+            level_transition = false
+            current_level = next_level
+            _init()
 
-    -- reset camera after transition
-    cam_x, cam_y = 0, 0
+            -- reset camera after transition
+            cam_x, cam_y = 0, 0
 
-    if not player then return end
+            if not player then return end
 
-    local gx, gy = player.grid_x, player.grid_y
+            local gx, gy = player.grid_x, player.grid_y
 
-    -- if out of map or not on edge -> keep camera centered
-    if gx < 0 or gx >= map_width or gy < 0 or gy >= map_height then return end
-    if gx ~= 0 and gx ~= map_width - 1 and gy ~= 0 and gy ~= map_height - 1 then return end
+            -- if out of map or not on edge -> keep camera centered
+            if gx < 0 or gx >= map_width or gy < 0 or gy >= map_height then return end
+            if gx ~= 0 and gx ~= map_width - 1 and gy ~= 0 and gy ~= map_height - 1 then return end
 
-    local px, py = tile_to_px(gx, gy)
-    local left_margin, right_margin = 24, 128 - 24
-    local top_margin, bottom_margin = 24, 128 - 24
+            local px, py = tile_to_px(gx, gy)
+            local left_margin, right_margin = 24, 128 - 24
+            local top_margin, bottom_margin = 24, 128 - 24
 
-    if gx == 0 then
-        cam_x = px - left_margin
-    elseif gx == map_width - 1 then
-        cam_x = px - right_margin
+            if gx == 0 then
+                cam_x = px - left_margin
+            elseif gx == map_width - 1 then
+                cam_x = px - right_margin
+            end
+
+            if gy == 0 then
+                cam_y = py - top_margin
+            elseif gy == map_height - 1 then
+                cam_y = py - bottom_margin
+            end
+
+            local max_nudge = 48
+            cam_x = clamp(cam_x, -max_nudge, max_nudge)
+            cam_y = clamp(cam_y, -max_nudge, max_nudge)
+        end
+    end
+end
+
+-- update common visual effects and timers
+function update_common_effects()
+    -- progress flash effect
+    if progress_flash > 0 then
+        progress_flash -= 0.32
+        if progress_flash < 0 then progress_flash = 0 end
     end
 
-    if gy == 0 then
-        cam_y = py - top_margin
-    elseif gy == map_height - 1 then
-        cam_y = py - bottom_margin
+    -- camera shake
+    if shake_timer > 0 then
+        shake_timer -= 1
     end
 
-    local max_nudge = 48
-    cam_x = clamp(cam_x, -max_nudge, max_nudge)
-    cam_y = clamp(cam_y, -max_nudge, max_nudge)
+    -- level transition animation
+    if level_transition then
+        update_level_transition()
+        return
+    end
+
+    update_particles()
+    update_flash_animation()
+    update_tile_respawn_animations()
+end
+
+function update_particles()
+    local to_remove = {}
+    for p in all(particles) do
+        p.x += p.vx
+        p.y += p.vy
+        -- gravity only for non-trail particles
+        if not p.is_trail then
+            p.vy += 0.1 -- gravity
+        end
+        -- rotation for rectangular particles
+        if p.is_rect then
+            p.rotation += p.rot_speed
+        end
+        p.life -= 0.02
+        if p.life <= 0 then
+            add(to_remove, p)
+        end
+    end
+    -- remove dead particles in separate loop to avoid iteration issues
+    for p in all(to_remove) do
+        del(particles, p)
+    end
+end
+
+-- handle title screen state
+function update_title_state()
+    -- leaderboard animation
+    if show_leaderboard and leaderboard_anim < 1 then
+        leaderboard_anim = min(1, leaderboard_anim + 0.08)
+    elseif not show_leaderboard and leaderboard_anim > 0 then
+        leaderboard_anim = max(0, leaderboard_anim - 0.12)
+    end
+
+    -- ensure menu index exists
+    if not title_menu_index then title_menu_index = 1 end
+
+    -- when leaderboard visible, allow closing it with O (btnp(3)) or X (btnp(5))
+    if show_leaderboard then
+        -- reset records with Z+X (btn(4)+btnp(5))
+        if btn(4) and btnp(5) then reset_all_best_times() end
+        -- close leaderboard with O (btnp(3))
+        if btnp(3) then
+            show_leaderboard = false
+            return
+        end
+        -- close leaderboard with X (btnp(5)) if not holding modifier (btn(4))
+        if btnp(5) and not btn(4) then
+            show_leaderboard = false
+            return
+        end
+    end
+
+    -- title navigation when leaderboard hidden
+    if not show_leaderboard and title_bounce_done then
+        -- navigate title menu with up/down
+        if btnp(2) then
+            title_menu_index = max(1, title_menu_index - 1)
+        elseif btnp(3) then
+            title_menu_index = min(3, title_menu_index + 1)
+        end
+
+        -- confirm/activate selection with X (btnp(5))
+        if btnp(5) and not btn(4) then
+            if title_menu_index == 1 then
+                -- start
+                start_game()
+            elseif title_menu_index == 2 then
+                -- toggle music
+                toggle_music()
+            elseif title_menu_index == 3 then
+                -- show leaderboard
+                show_leaderboard = true
+            end
+        end
+    end
 end
 
 function update_player_state()
@@ -400,8 +436,10 @@ function update_player_state()
     else
         handle_player_input()
     end
-
-    update_bounce(player)
+    -- update bounce only when player (ball) is actually drawn
+    if is_player_visible(player) then
+        update_bounce(player)
+    end
 end
 
 function update_camera()
@@ -453,10 +491,9 @@ function update_camera()
     if abs(cam_y - target_cam_y) < 0.25 then cam_y = target_cam_y end
 end
 
--- PLAYER UPDATE FUNCTIONS ---------------------------------------------------
-
 function update_playing_state()
     if not player then return end
+    if level_transition then return end
 
     -- level cleared handling
     if level_cleared then
@@ -470,19 +507,6 @@ function update_playing_state()
     -- update level time
     level_time += 1 / 30
 
-    -- level switching with Z+arrows
-    if level_skip and not level_transition then
-        handle_level_skip_input()
-    end
-
-    -- level transition animation
-    if level_transition then
-        update_level_transition()
-        return
-    end
-
-    -- update particles and player
-    update_particles()
     update_player_state()
     update_camera()
 end
@@ -530,30 +554,69 @@ function update_player_moving()
     end
 end
 
-function handle_player_input()
-    if btn(0) then
-        player.buffered_dir = 0
-        player.input_buffered = true
-    elseif btn(1) then
-        player.buffered_dir = 1
-        player.input_buffered = true
-    elseif btn(2) then
-        player.buffered_dir = 2
-        player.input_buffered = true
-    elseif btn(3) then
-        player.buffered_dir = 3
-        player.input_buffered = true
-    else
-        player.input_buffered = false
+-- update dynamic record animation
+function update_flash_animation()
+    if record_anim_stage == 0 then return end
+
+    record_anim_timer += 0.08
+
+    if record_anim_stage == 1 then
+        record_anim_height = 1
+        record_anim_width = 128
+        record_anim_x = lerp(0, 128, min(1, record_anim_timer)) -- slide from right to left
+
+        if record_anim_timer >= 0.5 then
+            record_anim_stage = 2
+            record_anim_timer = 0
+        end
+    elseif record_anim_stage == 2 then
+        record_anim_x = 0
+        record_anim_width = 128
+        record_anim_height = lerp(16, 1, min(1, record_anim_timer))
+
+        if record_anim_timer >= 0.3 then
+            record_anim_stage = 3
+            record_anim_timer = 0
+        end
+    elseif record_anim_stage == 3 then
+        record_anim_x = 0
+        record_anim_width = 128
+        record_anim_height = 11
+
+        if record_anim_timer >= 2 then
+            record_anim_stage = 4
+            record_anim_timer = 0
+        end
+    elseif record_anim_stage == 4 then
+        record_anim_x = 0
+        record_anim_width = 128
+        record_anim_height = lerp(1, 16, min(1, record_anim_timer))
+
+        if record_anim_timer >= 0.5 then
+            record_anim_stage = 5
+            record_anim_timer = 0
+        end
+    elseif record_anim_stage == 5 then
+        record_anim_x = 0
+        record_anim_height = 1
+        record_anim_width = lerp(0, 128, min(1, record_anim_timer))
+
+        if record_anim_timer >= 0.5 then
+            record_anim_stage = 0
+            record_anim_timer = 0
+        end
     end
 end
 
-function center_camera()
-    -- smoothly return camera to center
-    cam_x = lerp(0, cam_x, 0.2)
-    cam_y = lerp(0, cam_y, 0.2)
-    if abs(cam_x) < 0.25 then cam_x = 0 end
-    if abs(cam_y) < 0.25 then cam_y = 0 end
+function update_lost_state()
+    center_camera(-14)
+    -- if btnp(4) then reset_level(current_level + 1) end
+    if btnp(5) then reset_level(current_level) end
+    if btn(4) and btnp(1) then
+        set_level(current_level + 1)
+    elseif btn(4) and btnp(0) then
+        set_level(current_level - 1)
+    end
 end
 
 function update_won_state()
@@ -563,11 +626,17 @@ function update_won_state()
     end
 end
 
+function center_camera(offset_y)
+    -- smoothly return camera to center
+    cam_x = lerp(0, cam_x, 0.2)
+    cam_y = lerp(offset_y or 0, cam_y, 0.2)
+    if abs(cam_x) < 0.25 then cam_x = 0 end
+    if abs(cam_y) < 0.25 then cam_y = 0 end
+end
+
 function reset_level(level)
     current_level = level or 1
     lives = 1
-    cam_x = 0
-    cam_y = 0
     level_time = 0
     particles = {}
     tile_respawn_anims = {}
@@ -576,23 +645,18 @@ function reset_level(level)
     player = create_player(start_x, start_y)
     init_player_flags(player)
     reset_map()
-end
-
-function update_lost_state()
     center_camera()
-    if btnp(4) then reset_level(current_level + 1) end
-    if btnp(5) then reset_level(current_level) end
 end
 
 -- helper function to save current map
 function save_old_map()
     old_map = {}
     for i = 1, map_tiles do
-        old_map[i] = current_map[i]
+        old_map[i] = levels[current_level][i]
     end
 end
 
--- helper function to save current map
+-- helper function to set current level with transition
 function set_level(n)
     if not n then return end
 
@@ -605,29 +669,38 @@ function set_level(n)
     if n == current_level then return end
 
     next_level = n
-    -- determine animation direction: slide right if new > current
-    if next_level > current_level then
-        level_transition_direction = 1
-    else
-        level_transition_direction = -1
-    end
     level_transition = true
-    level_transition_timer = 0
     save_old_map()
-
+    trigger_flash_animation(68, "get ready!")
     -- reset tile animations when changing levels
     tile_respawn_anims = {}
     tile_respawn_active = false
-end
 
--- helper function to initialize player flags
-function init_player_flags(p)
-    p.can_move = false
-    p.input_buffered = false
-    p.buffered_dir = 0
-    p.can_hit = true
-    p.prev_size = 4
-    p.reached_peak = false
+    -- initialize transition animations
+    level_transition_new_anims = {}
+    local ay = 5
+    for tx = 0, map_width - 1 do
+        for ty = 0, map_height - 1 do
+            local idx = ty * map_width + tx + 1
+            -- new tiles falling in from top
+            if levels[next_level][idx] ~= 0 then
+                add(
+                    level_transition_new_anims, {
+                        x = tx,
+                        y = ty,
+                        tile = levels[next_level][idx],
+                        timer = -rnd(1), -- random delay
+                        start_y = -16, -- above screen
+                        current_y = -16,
+                        end_y = ay + ty * tile_size
+                    }
+                )
+            end
+        end
+    end
+    level_transition_phase = "slide"
+    level_transition_offset = 0
+    level_transition_direction = next_level > current_level and -1 or 1
 end
 
 -- helper function to create 4 debris particles in cardinal directions
@@ -701,30 +774,6 @@ function create_trail(old_gx, old_gy, new_gx, new_gy)
         local trail_y = old_py + (new_py - old_py) * t
         -- white trail particles, no velocity, just fade
         create_particle(trail_x + rnd(4) - 2, trail_y + rnd(4) - 2, 8, 0, 0, 0.8, true)
-    end
-end
-
-function update_particles()
-    local to_remove = {}
-    for p in all(particles) do
-        p.x += p.vx
-        p.y += p.vy
-        -- gravity only for non-trail particles
-        if not p.is_trail then
-            p.vy += 0.1 -- gravity
-        end
-        -- rotation for rectangular particles
-        if p.is_rect then
-            p.rotation += p.rot_speed
-        end
-        p.life -= 0.02
-        if p.life <= 0 then
-            add(to_remove, p)
-        end
-    end
-    -- remove dead particles in separate loop to avoid iteration issues
-    for p in all(to_remove) do
-        del(particles, p)
     end
 end
 
@@ -903,7 +952,6 @@ function update_bounce(p)
         -- ball shrinks to 1x1 (top view - zoom out) if falling
         local size = 8 * (1 - t) -- from 8 to 0
         p.w = max(1, size)
-        p.h = max(1, size)
         -- move ball down as it falls to show it's dropping into the void
         p.offset_y = t * 8 -- gradually move down by up to 8 pixels
         p.prev_bounce = 0
@@ -974,7 +1022,6 @@ function update_bounce(p)
     local max_size = 16
     local zoom_factor = bounce * bounce
     p.w = min_size + (max_size - min_size) * zoom_factor
-    p.h = min_size + (max_size - min_size) * zoom_factor
 
     -- detect moment of touching tile (smallest size) and hit tile
     if not p.moving and not p.falling then
@@ -1147,17 +1194,6 @@ function hit_tile(x, y)
     end
 end
 
-function init_background_palette()
-    for j = 0, #palette do
-        local plt = palette[j]
-        local nplt = {}
-        for i = 1, #plt do
-            nplt[plt[i]] = plt[i % #plt + 1]
-        end
-        palette[j] = nplt
-    end
-end
-
 -- get animation sprite for teleport tile
 function get_teleport_anim_sprite(tile)
     local anim_frame = flr((t * 24) % 6)
@@ -1190,7 +1226,6 @@ function create_player(x, y)
         moving = false, -- is ball moving
         move_timer = 0, -- timer for movement animation (0 to 1)
         w = 4, -- ball size (will animate 4-16)
-        h = 4,
         offset_y = 0, -- Y offset for animation (0 down, -4 up)
         bounce_timer = 0 -- timer for bounce animation
     }
@@ -1200,108 +1235,107 @@ end
 -- DRAWS ---------------------------------------------------------------------
 -- draw player with interpolation and effects
 function draw_player(p, camx, camy)
-    -- interpolate position if ball is moving
-    local render_x, render_y
-    local center_x, center_y = 7, 11
-    if p.falling then
-        -- during fall ball stays in center of tile (no interpolation)
-        render_x = p.grid_x
-        render_y = p.grid_y
-    elseif p.moving then
-        -- smooth interpolation from old to new position
-        local t = p.move_timer
-        -- easing out for smoother movement (slowdown at end)
-        local ease_t = 1 - (1 - t) * (1 - t)
-        render_x = p.old_x + (p.grid_x - p.old_x) * ease_t
-        render_y = p.old_y + (p.grid_y - p.old_y) * ease_t
-    else
-        render_x = p.grid_x
-        render_y = p.grid_y
-    end
-
-    -- allow optional camera offsets (world->screen): default 0
     camx = camx or 0
     camy = camy or 0
 
-    -- ball at position in world coords (center of 16x16 tile)
-    local world_px = render_x * tile_size + center_x
-    local world_py = render_y * tile_size + center_y
-    -- camera() already applied offset, so use world coords directly
-    local px = world_px
-    local py = world_py
+    local px, py = compute_ball_screen_pos(p)
 
-    -- shadow only when ball is near the ground (not in airborne flight) and not falling
-    -- hide shadow during jump/flight by checking ball size (p.w): when large => airborne
-    if not p.falling then
-        local tile = get_tile(p.grid_x, p.grid_y)
-        if tile ~= 0 and p.w <= 7 then
-            local shadow_x = p.grid_x * tile_size + center_x
-            local shadow_y = p.grid_y * tile_size + center_y
-            draw_player_shadow(shadow_x, shadow_y, 4, 5)
-        end
-    end
+    -- shadow
+    draw_ball_shadow_for(p, 7, 11)
 
-    -- ball with Y offset
-    local s = p.w / 1.8
-    local ball_y = py + p.offset_y - s / 2
+    -- render size and vertical offset
+    local s = ball_render_size(p)
+    local ball_y = py + (p.offset_y or 0) - s / 2
 
-    -- draw ball only if size larger than 1px
     if s > 0.5 then
-        local highlight_size = max(1.5, s * 0.45)
-        local highlight_offset = s * 0.35
-        -- shadow (black outline)
-        circfill(px, ball_y, s + 1, 0)
-        -- main ball (red base)
-        circfill(px, ball_y, s, 8)
-        -- darker gradient at bottom (transparency effect)
-        circfill(px + 1, ball_y + s * 0.25, s * 0.7, 2)
-        -- center gradient for depth
-        circfill(px + 1 - s * 0.1, ball_y - s * 0.1, s * 0.7, 14)
-        -- main highlight
-        circfill(px - highlight_offset, ball_y - highlight_offset, highlight_size, 7)
-        -- bright core highlights (glass effect)
-        if s > 2 then
-            circfill(px - highlight_offset * 1.1, ball_y - highlight_offset * 1.1, highlight_size * 0.6, 7)
-        end
-        -- small intense sparkle (like light reflex on glass)
-        if s > 2.5 then
-            local sparkle_size = max(0.5, s * 0.15)
-            circfill(px - s * 0.5, ball_y - s * 0.5, sparkle_size, 7)
-            pset(px - s * 0.5, ball_y - s * 0.5, 7)
-        end
+        draw_ball_highlights(px, ball_y, s)
+    end
+end
+
+-- draw shadow for ball if applicable
+function draw_ball_shadow_for(p, center_x, center_y)
+    if p.falling then return end
+    local tile = get_tile(p.grid_x, p.grid_y)
+    if tile ~= 0 and (p.w or 0) <= 7 then
+        circfill(p.grid_x * tile_size + center_x, p.grid_y * tile_size + center_y, 4, 5)
     end
 end
 
 -- draw player shadow as vertical lines within circle area
-function draw_player_shadow(cx, cy, r, col)
-    local x0 = flr(cx - r)
-    local x1 = flr(cx + r)
-    for x = x0, x1 do
-        local dx = x - cx
-        local h2 = r * r - dx * dx
-        if h2 >= 0 then
-            local dy = flr(sqrt(h2))
-            local y0 = flr(cy - dy)
-            local y1 = flr(cy + dy)
-            line(x, y0, x, y1, col)
-        end
+-- function draw_player_shadow(cx, cy, r, col)
+--     circfill(cx, cy, r, col)
+--     -- local x0 = flr(cx - r)
+--     -- local x1 = flr(cx + r)
+--     -- for x = x0, x1 do
+--     --     local dx = x - cx
+--     --     local h2 = r * r - dx * dx
+--     --     if h2 >= 0 then
+--     --         local dy = flr(sqrt(h2))
+--     --         local y0 = flr(cy - dy)
+--     --         local y1 = flr(cy + dy)
+--     --         line(x, y0, x, y1, col)
+--     --     end
+--     -- end
+-- end
+
+-- draw lighting / highlights for the ball
+function draw_ball_highlights(px, ball_y, s)
+    local highlight_size = max(1.5, s * 0.45)
+    local highlight_offset = s * 0.35
+
+    circfill(px, ball_y, s + 1, 0)
+    circfill(px, ball_y, s, 8)
+    circfill(px + 1, ball_y + s * 0.25, s * 0.7, 2)
+    circfill(px + 1 - s * 0.1, ball_y - s * 0.1, s * 0.7, 14)
+    circfill(px - highlight_offset, ball_y - highlight_offset, highlight_size, 7)
+
+    if s > 2 then
+        circfill(px - highlight_offset * 1.1, ball_y - highlight_offset * 1.1, highlight_size * 0.6, 7)
+    end
+
+    if s > 2.5 then
+        local sparkle_size = max(0.5, s * 0.15)
+        circfill(px - s * 0.5, ball_y - s * 0.5, sparkle_size, 7)
+        pset(px - s * 0.5, ball_y - s * 0.5, 7)
     end
 end
 
 -- draw tile with teleport animation
 function draw_tile_with_anim(tile, x, y)
+    -- special case for tile 4: draw as 42
+    local draw_tile = tile == 4 and 42 or tile
     -- check if it's a teleport tile
-    if tile >= 7 and tile <= 14 then
+    if draw_tile >= 7 and draw_tile <= 14 then
         -- choose background tile: cardinal teleports use teleport1_bg_sprite, diagonals use teleport2_bg_sprite
-        local bg_tile = (tile >= 11 and tile <= 14) and teleport2_bg_sprite or teleport1_bg_sprite
+        local bg_tile = (draw_tile >= 11 and draw_tile <= 14) and teleport2_bg_sprite or teleport1_bg_sprite
         -- draw background using the teleport bg constants directly (do not remap)
         draw_tile_sprite(bg_tile, x, y)
         -- draw animated icon in center (8x8 centered on 16x16 tile)
-        local icon_sprite = get_teleport_anim_sprite(tile)
+        local icon_sprite = get_teleport_anim_sprite(draw_tile)
         spr(icon_sprite, x + 4, y + 4)
     else
         -- normal tile drawing
-        draw_tile_sprite(map_tile_to_sprite(tile), x, y)
+        draw_tile_sprite(map_tile_to_sprite(draw_tile), x, y)
+    end
+end
+
+function draw_tile_with_scale(tile, x, y, scale)
+    -- special case for tile 4: draw as 42
+    local draw_tile = tile == 4 and 42 or tile
+    if scale >= 1 then
+        draw_tile_with_anim(draw_tile, x, y)
+    else
+        -- scaled drawing
+        if draw_tile >= 7 and draw_tile <= 14 then
+            -- for teleport, just draw normal for simplicity
+            draw_tile_with_anim(draw_tile, x, y)
+        else
+            local sprite = map_tile_to_sprite(draw_tile)
+            local source_x = (sprite % 16) * 8
+            local source_y = flr(sprite / 16) * 8
+            local offset = (16 - 16 * scale) / 2
+            sspr(source_x, source_y, 16, 16, x + offset, y + offset, 16 * scale, 16 * scale)
+        end
     end
 end
 
@@ -1309,13 +1343,14 @@ end
 function draw_board()
     local ay = 4
 
-    if not level_transition then
-        circfill(64 - cam_x, 64 - cam_y, 44, 0)
-        -- rectfill(32 - cam_x, ay + 32 - cam_y, 96 - cam_x, ay + 96 - cam_y, 0)
-    end
+    -- if not level_transition then
+    circfill(64 - cam_x, 64 - cam_y, 42, 0)
+    -- rectfill(32 - cam_x, ay + 32 - cam_y, 96 - cam_x, ay + 96 - cam_y, 0)
+    -- end
 
     -- helper function to draw a map with offset
-    local function draw_map(map_data, x_offset)
+    local function draw_map(map_data, x_offset, y_offset)
+        y_offset = y_offset or 0
         for tx = 0, map_width - 1 do
             local base_x = tx * tile_size + x_offset
             -- early skip if entire column is off screen
@@ -1324,7 +1359,7 @@ function draw_board()
                     local idx = ty * map_width + tx + 1
                     local s = map_data[idx]
                     if s ~= 0 then
-                        local yy = ay + ty * tile_size
+                        local yy = ay + ty * tile_size + y_offset
 
                         -- check if this tile has a respawn animation
                         local animated_y = yy
@@ -1350,185 +1385,157 @@ function draw_board()
     end
 
     if level_transition then
-        -- calculate offset for level transition animation
-        local offset_x = level_transition_timer * 128 * level_transition_direction
-        -- draw old map (sliding out)
-        draw_map(old_map, -offset_x)
-        -- draw new map (sliding in from opposite side)
-        draw_map(levels[next_level], -offset_x + (128 * -level_transition_direction))
+        if level_transition_phase == "slide" then
+            draw_map(old_map, level_transition_offset)
+        elseif level_transition_phase == "fall" then
+            -- draw new tiles falling in from top
+            for anim in all(level_transition_new_anims) do
+                if anim.timer >= 0 then
+                    local base_x = anim.x * tile_size
+                    draw_tile_with_anim(anim.tile, base_x, anim.current_y)
+                end
+            end
+        end
     else
         -- normal drawing (no transition)
         draw_map(current_map, 0)
     end
 end
 
-function draw_messages()
-    -- game state messages
-    if level_cleared and level_cleared_timer < 5 then
-        local pulse = 0.5 + 0.5 * sin(t * 4)
-        local text_col = 7 + flr(pulse * 3) -- pulse between white and light colors
-        local time_text = "time: " .. format_time(level_time)
-        local text1 = "level cleared!"
-
-        -- get best time info
-        local best_time = best_times[current_level]
-        local best_text = ""
-        if best_time then
-            best_text = "best: " .. format_time(best_time)
-            width3 = #best_text * 4
-        end
-
-        -- adjust box size for additional text
-        local box_height = best_time and 78 or 70
-        rectfill(0, 50, 128, box_height, 0)
-
-        print_centered(text1, 54, text_col)
-        print_centered(time_text, 62, 7)
-
-        if best_time then
-            print_centered(best_text, 70, 6)
-        end
-    elseif game_state == "won" then
-        rectfill(0, 50, 128, 70, 0)
-        print_centered("all levels complete!", 54, 11)
-        print_centered("press \x97 to restart", 62, 7)
-    elseif game_state == "lost" then
-        rectfill(0, 50, 128, 80, 0)
-        print_centered("game over", 54, 8)
-        print_centered("press \x97 to restart", 62, 7)
-        print_centered("press \x8e for next level", 70, 7)
-    end
-    -- draw new dynamic record animation (replaces old record message)
-    draw_record_animation()
-end
-
 function draw_gui()
-    rectfill(0, 0, 128, 9, 0)
-    line(0, 9, 128, 9, 1)
-    -- draw level info in center
-    local level_text = "level " .. current_level
-    print(level_text, 2, 2, 5)
-    print(level_text, 2, 1, 7)
+    rectfill(0, 0, 128, 9, 1)
+    -- rectfill(0, 119, 128, 128, 0)
+    -- line(0, 8, 128, 8, 1)
+    rect(0, 9, 127, 127, 1)
+    rect(1, 10, 126, 126, 0)
 
-    -- draw time counter in mm:ss format (right side)
+    local level_text = "level " .. current_level
+    print(level_text, 2, 3, 0)
+    print(level_text, 2, 2, 6)
+
     local time_text = format_time(level_time)
     local time_width = #time_text * 4
-    print(time_text, 128 - time_width - 2, 2, 5)
-    print(time_text, 128 - time_width - 2, 1, 7)
+    print(time_text, 128 - time_width - 2, 3, 0)
+    print(time_text, 128 - time_width - 2, 2, 6)
     -- clock icon
-    spr(128, 96, 0)
+    spr(128, 96, 1)
 end
 
 function draw_title_screen()
     local title_x = 33
-    local title_y = 20
-    local menu_x = 64
-    local menu_y = 70
-    local menu_spacing = 11
-    local pulse = sin(t * 2) * 0.5 + 0.5
+    function draw_title_screen()
+        -- Layout constants
+        local title_x, title_y = 33, 26
+        local menu_x, menu_y = 64, title_y + 46
+        local menu_spacing = 9
+        local pulse = sin(t * 2) * 0.5 + 0.5
 
-    if title_bounce_done then draw_background() else cls() end
-
-    if not show_leaderboard then
-        circfill(64, 64, 48, 0)
-
-        -- update title fade (0..1)
-        title_fade = mid(0, (title_fade or 0) + 0.05, 1)
-
-        -- simple drop + bounce physics for title logo
-        if title_bounce_done == nil then title_bounce_done = false end
-        if not title_bounce_done then
-            title_drop_vy = (title_drop_vy or 0) + 0.9 -- gravity
-            title_drop_y = (title_drop_y or -40) + title_drop_vy
-            if title_drop_y >= 0 then
-                title_drop_y = 0
-                -- bounce with damping
-                title_drop_vy = -title_drop_vy * 0.45
-                -- stop when bounce is tiny
-                if abs(title_drop_vy) < 0.6 then
-                    title_drop_vy = 0
-                    title_bounce_done = true
-                end
-            end
-        end
-
-        local cur_y = title_y + (title_drop_y or 0)
-
-        -- map palette to simulate brightening: dark -> mid -> bright -> original
-        if title_fade < 1 then
-            if title_fade < 0.33 then
-                for c = 1, 15 do
-                    pal(c, 1)
-                end
-            elseif title_fade < 0.66 then
-                for c = 1, 15 do
-                    pal(c, 7)
-                end
-            elseif title_fade < 0.88 then
-                for c = 1, 15 do
-                    pal(c, 12)
-                end
-            else
-                for c = 1, 15 do
-                    pal(c, c)
-                end
-            end
-        end
-
-        -- title sprites (draw with current palette remap and vertical offset)
-        for i = 0, 7 do
-            spr(136 + i, title_x + i * 8, cur_y)
-            spr(152 + i, title_x + i * 8, cur_y + 8)
-            spr(168 + i, title_x + i * 8, cur_y + 16)
-            spr(184 + i, title_x + i * 8, cur_y + 24)
-        end
-
-        -- restore default palette so UI text draws normally
-        pal()
-
-        -- draw title text using same vertical offset so it moves with the logo
+        -- 1. Background and bounce state
         if title_bounce_done then
-            title_text_timer = (title_text_timer or 0) + 1 / 30
-            local delay = 0.3
-            local flash_dur = 0.6
-            if title_text_timer >= delay then
-                local ft = title_text_timer - delay
-                if ft < flash_dur then
-                    local pulse = sin(t * 20)
-                    local col = pulse > 0 and 7 or 10
-                    print_centered("BOUNCING", cur_y - 8, col, 4)
-                    print_centered("BY PRAgHUS", cur_y + 34, col, 4)
+            rectfill(14, 14, 112, 112, 0)
+            draw_background()
+        else
+            cls()
+        end
+
+        -- 2. Animation timeline update
+        title_anim_timer = (title_anim_timer or 0) + 1 / 30
+
+        -- 3. Title fade-in logic
+        if not show_leaderboard then
+            rectfill(20, 20, 106, 106, 0)
+            -- Fade-in: 0 (dark) -> 1 (bright)
+            title_fade = mid(0, (title_fade or 0) + 0.05, 2)
+
+            -- 4. Title drop and bounce animation
+            if title_bounce_done == nil then title_bounce_done = false end
+            if not title_bounce_done then
+                title_drop_vy = (title_drop_vy or 0) + 0.9 -- gravity
+                title_drop_y = (title_drop_y or -40) + title_drop_vy
+                if title_drop_y >= 0 then
+                    title_drop_y = 0
+                    title_drop_vy = -title_drop_vy * 0.45 -- bounce with damping
+                    if abs(title_drop_vy) < 0.6 then
+                        title_drop_vy = 0
+                        title_bounce_done = true
+                    end
+                end
+            end
+            local cur_y = title_y + (title_drop_y or 0)
+
+            -- 5. Palette animation for fade-in
+            if title_fade < 1 then
+                if title_fade < 0.33 then
+                    for c = 1, 15 do
+                        pal(c, 0)
+                    end
+                elseif title_fade < 0.66 then
+                    for c = 1, 15 do
+                        pal(c, (c == 8 or c == 2 or c == 1) and 0 or 1)
+                    end
+                elseif title_fade < 0.77 then
+                    for c = 1, 15 do
+                        pal(c, 12)
+                    end
                 else
-                    print_centered("BOUNCING", cur_y - 8, 10, 4)
-                    print_centered("BY PRAgHUS", cur_y + 34, 10, 4)
+                    for c = 1, 15 do
+                        pal(c, c)
+                    end
                 end
             end
 
-            print("V1.1", 110, 120, 6)
+            -- 6. Draw title logo sprites
+            for i = 0, 7 do
+                spr(136 + i, title_x + i * 8, cur_y)
+                spr(152 + i, title_x + i * 8, cur_y + 8)
+                spr(168 + i, title_x + i * 8, cur_y + 16)
+                spr(184 + i, title_x + i * 8, cur_y + 24)
+            end
 
-            if not title_menu_index then title_menu_index = 1 end
+            set_default_palette()
 
-            local items = {
-                "start",
-                (music_on and "music: on" or "music: off"),
-                "best times"
-            }
+            -- 7. Title text and menu animation (after bounce)
+            if title_bounce_done then
+                local delay, flash_dur = 0.6, 0.8
+                if title_anim_timer >= delay then
+                    rect(20, 20, 106, 106, title_anim_timer >= 0.75 and 1 or 0)
+                    local ft = title_anim_timer - delay
+                    if ft < flash_dur then
+                        local pulse = sin(t * 20)
+                        local col = pulse > 0 and 7 or 10
+                        print_centered("BOUNCING", cur_y - 8, col, 4)
+                        print_centered("BY PRAgHUS", cur_y + 32, col, 4)
+                    else
+                        print_centered("BOUNCING", cur_y - 8, 10, 4)
+                        print_centered("BY PRAgHUS", cur_y + 32, 10, 4)
+                    end
+                end
+                print("V1.1", 110, 120, 6)
 
-            for i = 1, #items do
-                local yy = menu_y + (i - 1) * menu_spacing
-                if i == title_menu_index then
-                    rectfill(menu_x - 32, yy - 2, menu_x + 32, yy + 6, 8)
-                    print_centered(items[i], yy, 7)
-                else
-                    print_centered(items[i], yy, 6, 1)
+                if not title_menu_index then title_menu_index = 1 end
+                local items = {
+                    "start",
+                    (music_on and "music: on" or "music: off"),
+                    "best times"
+                }
+                if title_anim_timer >= 0.6 then
+                    for i = 1, #items do
+                        local yy = menu_y + (i - 1) * menu_spacing
+                        if i == title_menu_index and title_anim_timer >= 1.1 then
+                            rectfill(menu_x - 32, yy - 2, menu_x + 32, yy + 6, title_anim_timer >= 1.2 and 8 or 2)
+                            print_centered(items[i], yy, 7)
+                        else
+                            print_centered(items[i], yy, title_anim_timer >= 0.7 and 6 or 1)
+                        end
+                    end
                 end
             end
         end
-    end
 
-    -- draw sliding leaderboard
-    if leaderboard_anim > 0 then
-        draw_leaderboard()
+        -- 8. Draw sliding leaderboard (if active)
+        if leaderboard_anim > 0 then
+            draw_leaderboard()
+        end
     end
 end
 
@@ -1579,21 +1586,17 @@ function draw_leaderboard()
         end
     end
 
-    print_centered("\x8e+\x97 reset records", board_y + 8, 9, 4)
-    print_centered("press \x83 to close", board_y + board_height - 12, 6, 5)
+    print_centered("\x8e+\x97 reset records", board_y + 8, 9, 1)
+    print_centered("press \x83 to close", board_y + board_height - 12, 6, 1)
 end
 
 function draw_background()
-    -- if level_transition then cls() end
-
-    rectfill(16 - cam_x, 16 - cam_y, 112 - cam_x, 114 - cam_y, 0)
-
+    rectfill(16 - cam_x, 16 - cam_y, 114 - cam_x, 116 - cam_y, 0)
     for i = 0, 999 do
         local x, y = rnd(128), rnd(128)
         local c = pget(x, y)
         local plt = game_state == "title" and palette[0] or palette[current_level % #palette + 1]
         local a = atan2(x - 64, y - 64)
-
         if plt[c] then
             if rnd(1.1) >= 1 then
                 c = plt[c]
@@ -1601,10 +1604,85 @@ function draw_background()
         else
             c = 0
         end
-
         circfill(x + 2 * cos(a), y + 2 * sin(a), 1, c)
     end
-    -- end
+end
+
+function draw_messages()
+    local pulse = 0.5 + 0.5 * sin(t * 4)
+    local color = 7 + flr(pulse * 3)
+
+    -- local pulse = sin(t * 2) * 0.5 + 0.5
+    -- local color = flr(pulse * 6) + 8
+
+    -- pulse between white and light colors
+    if level_cleared and level_cleared_timer < 5 then
+        local time_text = "time: " .. format_time(level_time)
+        local text1 = "level cleared!"
+
+        -- get best time info
+        local best_time = best_times[current_level]
+        local best_text = ""
+        if best_time then
+            best_text = "best: " .. format_time(best_time)
+            width3 = #best_text * 4
+        end
+
+        -- adjust box size for additional text
+        local box_height = best_time and 78 or 70
+        rectfill(0, 50, 128, box_height, 0)
+
+        print_centered(text1, 54, color)
+        print_centered(time_text, 62, 7)
+
+        if best_time then
+            print_centered(best_text, 70, 6)
+        end
+    elseif game_state == "won" then
+        rectfill(0, 50, 128, 70, 0)
+        print_centered("all levels complete!", 54, 11)
+        print_centered("press \x97 to restart", 62, 7)
+    elseif game_state == "lost" then
+        -- rectfill(2, 48, 126, 82, 0)
+        -- rectfill(0, 49, 128, 81, 1)
+        -- rectfill(0, 50, 128, 80, 0)
+        rectfill(0, 0, 128, 8, 1)
+        -- print_centered("game over", 54, 8)
+        print_centered("press \x8e+<> to level skip", 2, 6, 0)
+        print_centered("press \x97 to restart", 22, color, 0)
+    end
+    -- draw new dynamic record animation (replaces old record message)
+    draw_flash_animation()
+end
+
+-- draw dynamic record animation
+function draw_flash_animation()
+    if record_anim_stage == 0 then return end
+
+    local y_center = record_anim_y_center or 64
+    local y_pos = y_center - record_anim_height / 2
+
+    local rect_color = 7
+    if record_anim_stage == 3 then
+        rect_color = 0
+    end
+
+    rectfill(record_anim_x, y_pos, record_anim_x + record_anim_width - 1, y_pos + record_anim_height - 1, rect_color)
+
+    if record_anim_stage == 3 then
+        local text = record_anim_text
+        local text_width = #text * 4
+        -- local text_x = record_anim_x + (record_anim_width - text_width) / 2
+        local text_y = y_center - 3 -- center text vertically
+
+        if record_anim_height >= 8 and record_anim_width >= text_width then
+            -- rainbow color cycling effect
+            local color_cycle = sin(t * 8) * 3 + 3 -- cycles through colors 0-6
+            local text_color = flr(color_cycle) + 8 -- colors 8-14 (bright colors)
+            if text_color > 14 then text_color = 8 + (text_color - 15) end
+            print_centered(text, text_y, text_color)
+        end
+    end
 end
 
 -- helper to draw 2x2 sprite tile
@@ -1620,6 +1698,7 @@ function lerp(a, b, i) return i * a + (1 - i) * b end
 function clamp(a, mi, ma) return min(max(a, mi), ma) end
 function map_tile_to_sprite(id) return tile_sprite_map[id] or id end
 function tile_to_px(x, y) return 0 + x * tile_size + 8, y * tile_size + 8 end
+function set_default_palette() pal(0, 129, 1) end
 
 -- helper for centered text printing
 function print_centered(text, y, col, shadow_col)
@@ -1673,19 +1752,6 @@ function load_levels_from_native_map()
     end
 end
 
--- initialize best times table
-function init_best_times()
-    -- load saved times from cartridge data first
-    load_best_times()
-
-    -- if no saved data, initialize with nil
-    for i = 1, #levels do
-        if not best_times[i] then
-            best_times[i] = nil -- no best time initially
-        end
-    end
-end
-
 -- save best times to cartridge persistent data
 function save_best_times()
     for i = 1, min(#levels, 63) do
@@ -1727,7 +1793,7 @@ function check_best_time()
         best_times[level_idx] = current_time
 
         -- trigger new dynamic animation
-        trigger_record_animation(90)
+        trigger_flash_animation(90)
 
         -- save to persistent storage immediately
         save_best_times()
@@ -1739,7 +1805,7 @@ function check_best_time()
 end
 
 -- trigger new dynamic record animation
-function trigger_record_animation(y_offset, text)
+function trigger_flash_animation(y_offset, text)
     -- don't restart if animation is already playing
     if record_anim_stage > 0 then return end
     record_anim_stage = 1
@@ -1751,94 +1817,51 @@ function trigger_record_animation(y_offset, text)
     record_anim_text = text or "new record!"
 end
 
--- update dynamic record animation
-function update_record_animation()
-    if record_anim_stage == 0 then return end
-
-    record_anim_timer += 0.08
-
-    if record_anim_stage == 1 then
-        record_anim_height = 1
-        record_anim_width = 128
-        record_anim_x = lerp(0, 128, min(1, record_anim_timer)) -- slide from right to left
-
-        if record_anim_timer >= 0.5 then
-            record_anim_stage = 2
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 2 then
-        record_anim_x = 0
-        record_anim_width = 128
-        record_anim_height = lerp(16, 1, min(1, record_anim_timer))
-
-        if record_anim_timer >= 0.3 then
-            record_anim_stage = 3
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 3 then
-        record_anim_x = 0
-        record_anim_width = 128
-        record_anim_height = 11
-
-        if record_anim_timer >= 2 then
-            record_anim_stage = 4
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 4 then
-        record_anim_x = 0
-        record_anim_width = 128
-        record_anim_height = lerp(1, 16, min(1, record_anim_timer))
-
-        if record_anim_timer >= 0.5 then
-            record_anim_stage = 5
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 5 then
-        record_anim_x = 0
-        record_anim_height = 1
-        record_anim_width = lerp(0, 128, min(1, record_anim_timer))
-
-        if record_anim_timer >= 0.5 then
-            record_anim_stage = 0
-            record_anim_timer = 0
-        end
-    end
+-- helper: whether messages/overlays are currently shown
+function is_showing_messages()
+    return (level_cleared and level_cleared_timer < 5)
+            or game_state == "won"
+            or game_state == "lost"
+            or record_anim_stage > 0
 end
 
--- draw dynamic record animation
-function draw_record_animation()
-    if record_anim_stage == 0 then return end
+-- helper: whether the ball is large enough to be drawn
+function is_ball_drawn(p)
+    if not p then return false end
+    local s = (p.w or 0) / 1.8
+    return s > 0.5
+end
 
-    -- calculate y position so bar expands from center vertically
-    local y_center = record_anim_y_center or 64
-    local y_pos = y_center - record_anim_height / 2
+-- helper: whether player is visible and can be updated/drawn
+function is_player_visible(p)
+    return p and not level_cleared and not level_transition and not is_showing_messages() and is_ball_drawn(p)
+end
 
-    -- choose rectangle color based on stage
-    local rect_color = 7
-    -- white by default
-    if record_anim_stage == 3 then
-        rect_color = 0 -- black in shrinking phases
+-- helper: compute render radius for ball
+function ball_render_size(p)
+    return (p and (p.w or 0) or 0) / 1.8
+end
+
+-- compute on-screen coordinates for the ball (accounts for interpolation)
+function compute_ball_screen_pos(p)
+    local center_x, center_y = 7, 11
+    local render_x, render_y
+    if p.falling then
+        render_x = p.grid_x
+        render_y = p.grid_y
+    elseif p.moving then
+        local t = p.move_timer
+        local ease_t = 1 - (1 - t) * (1 - t)
+        render_x = p.old_x + (p.grid_x - p.old_x) * ease_t
+        render_y = p.old_y + (p.grid_y - p.old_y) * ease_t
+    else
+        render_x = p.grid_x
+        render_y = p.grid_y
     end
 
-    -- draw rectangle
-    rectfill(record_anim_x, y_pos, record_anim_x + record_anim_width - 1, y_pos + record_anim_height - 1, rect_color)
-
-    if record_anim_stage == 3 then
-        -- showing stage - display text with rainbow colors
-        local text = record_anim_text
-        local text_width = #text * 4
-        -- local text_x = record_anim_x + (record_anim_width - text_width) / 2
-        local text_y = y_center - 3 -- center text vertically
-
-        if record_anim_height >= 8 and record_anim_width >= text_width then
-            -- rainbow color cycling effect
-            local color_cycle = sin(t * 8) * 3 + 3 -- cycles through colors 0-6
-            local text_color = flr(color_cycle) + 8 -- colors 8-14 (bright colors)
-            if text_color > 14 then text_color = 8 + (text_color - 15) end
-
-            print_centered(text, text_y, text_color)
-        end
-    end
+    local px = render_x * tile_size + center_x
+    local py = render_y * tile_size + center_y
+    return px, py, render_x, render_y, center_x, center_y
 end
 
 -- helper function to format time as mm:ss
@@ -1860,9 +1883,42 @@ function format_time(time_seconds)
     return time_text
 end
 
-------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
 -- INITIALIZATION
 -------------------------------------------------------------------------------
+function init_player_flags(p)
+    p.can_move = false
+    p.input_buffered = false
+    p.buffered_dir = 0
+    p.can_hit = true
+    p.prev_size = 4
+    p.reached_peak = false
+end
+
+function init_background_palette()
+    for j = 0, #palette do
+        local plt = palette[j]
+        local nplt = {}
+        for i = 1, #plt do
+            nplt[plt[i]] = plt[i % #plt + 1]
+        end
+        palette[j] = nplt
+    end
+end
+
+-- initialize best times table
+function init_best_times()
+    -- load saved times from cartridge data first
+    load_best_times()
+
+    -- if no saved data, initialize with nil
+    for i = 1, #levels do
+        if not best_times[i] then
+            best_times[i] = nil -- no best time initially
+        end
+    end
+end
+
 load_levels_from_native_map()
 init_background_palette()
 init_best_times()
@@ -1884,22 +1940,22 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000aaaaaaaaaaaa000000000000000000000000000000000006666666666666000ddddddddddddd0006666666666666d0
-000000000000000000999999999999000aaaaaaaaaaaaaa0000000000000000000000000000000006555555555555560ddddddddddddddd1666666666666666d
-000888888888800009999999999999900aa444aaaaaaaaa000cccccccccccc0000bbbbbbbbbbbb006d66666666666d60ddddddddddddddd1666666666666666d
-0088888888888800099aa999999999900aaa99aaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb06d65666666656d60dddd5ddddd5dddd1666d66666666d66d
-0088ff88888888000999a999999999900aaaa9aaaaaaaaa00cc1111111111cc00bb1111111111bb06d67666666676d60ddd516ddd516ddd1666766666666766d
-00888f8888888800099a9999999999900aa999aaaaaaaaa00cc1dddddddd1cc00bb1333333331bb06d66666666666d60dddd6ddddd6dddd1666666666666666d
-00888f8888888800099aa999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666660ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666d60ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06666666666666660ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaa00cc5cccccccc5cc00bb3bbbbbbbb3bb06d66666666666660dddd5ddddd5dddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb0666d6666666d6660ddd516ddd516ddd1666666666666666d
-00e8888888888e00099999999999999007aaaaaaaaaaaa700cc5cccccccc5cc00bb3bbbbbbbb3bb06667666666676660dddd6ddddd6dddd1666d66666666d66d
-0027eeeeeeeee2000f999999999999f009777777777777900cccccccccccccc00bbbbbbbbbbbbbb06666666666666660ddddddddddddddd1666766666666766d
-0002222222222000047fffffffffff4004999999999999400dccccccccccccd006bbbbbbbbbbbb6066666666666666606ddddddddddddd61766666666666667d
-000000000000000000444444444444000299999999999920056ddddddddddd500576666666666650d7777777777777501666666666666610d7777777777777dd
-00000000000000000000000000000000002222222222220000555555555555000055555555555500055555555555550001111111111111000dddddddddddddd0
+0000000000000000001111111111110001aaaaaaaaaaaa100000000000000000000000000000000016666666666666100ddddddddddddd0006666666666666d0
+000111111111100001999999999999101aaaaaaaaaaaaaa1001111111111110000111111111111006555555555555561ddddddddddddddd1666666666666666d
+001888888888810019999999999999911aa444aaaaaaaaa101cccccccccccc1001bbbbbbbbbbbb106d66666666666d61ddddddddddddddd1666666666666666d
+0188888888888810199aa999999999911aaa99aaaaaaaaa11cccccccccccccc11bbbbbbbbbbbbbb16d65666666656d61dddd5ddddd5dddd1666d66666666d66d
+0188ff88888888101999a999999999911aaaa9aaaaaaaaa11cc1111111111cc11bb1111111111bb16d67666666676d61ddd516ddd516ddd1666766666666766d
+01888f8888888810199a9999999999911aa999aaaaaaaaa11cc1dddddddd1cc11bb1333333331bb16d66666666666d61dddd6ddddd6dddd1666666666666666d
+01888f8888888810199aa999999999911aaaaaaaaaaaaaa11cc1cccccccc1cc11bb1bbbbbbbb1bb16d66666666666661ddddddddddddddd1666666666666666d
+018888888888881019999999999999911aaaaaaaaaaaaaa11cc1cccccccc1cc11bb1bbbbbbbb1bb16d66666666666d61ddddddddddddddd1666666666666666d
+018888888888881019999999999999911aaaaaaaaaaaaaa11cc1cccccccc1cc11bb1bbbbbbbb1bb16666666666666661ddddddddddddddd1666666666666666d
+018888888888881019999999999999911aaaaaaaaaaaaaa11cc5cccccccc5cc11bb3bbbbbbbb3bb16d66666666666661dddd5ddddd5dddd1666666666666666d
+018888888888881019999999999999911aaaaaaaaaaaaaa11cccccccccccccc11bbbbbbbbbbbbbb1666d6666666d6661ddd516ddd516ddd1666666666666666d
+01e8888888888e10199999999999999117aaaaaaaaaaaa711cc5cccccccc5cc11bb3bbbbbbbb3bb16667666666676661dddd6ddddd6dddd1666d66666666d66d
+0127eeeeeeeee2101f999999999999f119777777777777911cccccccccccccc11bbbbbbbbbbbbbb16666666666666661ddddddddddddddd1666766666666766d
+0012222222222100147fffffffffff4114999999999999411dccccccccccccd116bbbbbbbbbbbb6166666666666666616ddddddddddddd61766666666666667d
+000111111111100001444444444444101299999999999921156ddddddddddd511576666666666651d7777777777777511666666666666610d7777777777777dd
+00000000000000000011111111111100012222222222221001555555555555100155555555555510155555555555551001111111111111000dddddddddddddd0
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000
 07000000007000000007000000007000000700000070000000770000000070000000000000000000000000000000700000000000000000000000000000000000
@@ -1933,13 +1989,13 @@ __gfx__
 00000000000000000000100000017100000010000000000000000000000000000001110000777000000111000000000000000000000000000000000000000000
 00000000000000000000000000001000000000000000000000000000000000000000000000111000000000000000000000000000000000000000000000000000
 00666000000000000000000000000000000000000000000000000000000000007ffffffffffff7007ffffffff0000000ffffffff000ffffffffffffff0000000
-0655560000000000000000000000000000000000000000000000000000000000e8888888888888f2e8888888ff00000f88888888ffdf8888888888888f000000
-6506056000000000000000000000000000000000000000000000000000000000e88888888888888fe88888888e1000f88888888888e288888888888888f00000
+0611160000000000000000000000000000000000000000000000000000000000e8888888888888f2e8888888ff00000f88888888ffdf8888888888888f000000
+6106016000000000000000000000000000000000000000000000000000000000e88888888888888fe88888888e1000f88888888888e288888888888888f00000
 6006606000000000000000000000000000000000000000000000000000000000e888888888888888f88888888e100e8888888888888e288888888888888e0000
-6005506000000000000000000000000000000000000000000000000000000000e888888222888888e28888888e11e88888888888888e128888222888888e0000
-5600065000000000000000000000000000000000000000000000000000000000e8888821112888888e288888e0112888888888888888e128821112888888e000
-05666500000000000000000000000000000000000000000000000000000000000e888821100288888e288888e0128888888222288888e128821100288888e100
-00555000000000000000000000000000000000000000000000000000000000000e888821100288888e088888e01288888821111288888e12821100288888e100
+6001106000000000000000000000000000000000000000000000000000000000e888888222888888e28888888e11e88888888888888e128888222888888e0000
+1600061000000000000000000000000000000000000000000000000000000000e8888821112888888e288888e0112888888888888888e128821112888888e000
+01666100000000000000000000000000000000000000000000000000000000000e888821100288888e288888e0128888888222288888e128821100288888e100
+00111000000000000000000000000000000000000000000000000000000000000e888821100288888e088888e01288888821111288888e12821100288888e100
 00000000000000000000000000000000000000000000000000000000000000000e888821100288888e088888e01288888821000288888e11821100288888e100
 00000000000000000000000000000000000000000000000000000000000000000e88882110028888e0188888e01288888821100288888e1182110028888e1100
 00000000000000000000000000000000000000000000000000000000000000000e88882110028888e0188888e01288888821100288888e1182110028888e1100

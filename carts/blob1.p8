@@ -171,12 +171,7 @@ function _draw()
     draw_board()
     draw_particles(false)
 
-    local showing_messages = (level_cleared and level_cleared_timer < 5)
-            or game_state == "won"
-            or game_state == "lost"
-            or record_anim_stage > 0
-
-    if player and not level_cleared and not level_transition and not showing_messages then
+    if is_player_visible(player) then
         draw_player(player, shake_x + cam_x, shake_y + cam_y)
     end
 
@@ -186,6 +181,25 @@ function _draw()
     -- UI particles
     draw_particles(true)
     draw_messages()
+end
+-- helper: whether messages/overlays are currently shown
+function is_showing_messages()
+    return (level_cleared and level_cleared_timer < 5)
+            or game_state == "won"
+            or game_state == "lost"
+            or record_anim_stage > 0
+end
+
+-- helper: whether the ball is large enough to be drawn
+function is_ball_drawn(p)
+    if not p then return false end
+    local s = (p.w or 0) / 1.8
+    return s > 0.5
+end
+
+-- helper: whether player is visible and can be updated/drawn
+function is_player_visible(p)
+    return p and not level_cleared and not level_transition and not is_showing_messages() and is_ball_drawn(p)
 end
 
 -- update common visual effects and timers
@@ -374,7 +388,10 @@ function update_player_state()
         handle_player_input()
     end
 
-    update_bounce(player)
+    -- update bounce only when player (ball) is actually drawn
+    if is_player_visible(player) then
+        update_bounce(player)
+    end
 end
 
 function update_camera()
@@ -877,7 +894,6 @@ function update_bounce(p)
         -- ball shrinks to 1x1 (top view - zoom out) if falling
         local size = 8 * (1 - t) -- from 8 to 0
         p.w = max(1, size)
-        p.h = max(1, size)
         -- move ball down as it falls to show it's dropping into the void
         p.offset_y = t * 8 -- gradually move down by up to 8 pixels
         p.prev_bounce = 0
@@ -948,7 +964,6 @@ function update_bounce(p)
     local max_size = 16
     local zoom_factor = bounce * bounce
     p.w = min_size + (max_size - min_size) * zoom_factor
-    p.h = min_size + (max_size - min_size) * zoom_factor
 
     -- detect moment of touching tile (smallest size) and hit tile
     if not p.moving and not p.falling then
@@ -1153,7 +1168,6 @@ function create_player(x, y)
         moving = false, -- is ball moving
         move_timer = 0, -- timer for movement animation (0 to 1)
         w = 4, -- ball size (will animate 4-16)
-        h = 4,
         offset_y = 0, -- Y offset for animation (0 down, -4 up)
         bounce_timer = 0 -- timer for bounce animation
     }
