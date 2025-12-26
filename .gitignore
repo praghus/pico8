@@ -1,5 +1,6 @@
 # Pico-8 repo ignores
 backup/
+bbs/
 cdata/
 cstore/
 plates/

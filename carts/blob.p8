@@ -8,11 +8,9 @@ cartdata("blob_best_times") -- initialize cartdata storage for best times
 
 -- CORE GAME STATE ----------------------------------------------------------
 t = 0
-lives = 3
 game_state = "title" -- "title", "playing", "won", "lost"
 firstinit = true
 immortal = false -- debug mode to prevent falling off
-show_numbers = true
 
 -- LEVEL STATE ---------------------------------------------------------------
 current_level = 1
@@ -58,26 +56,37 @@ shake_intensity = 0
 particles = {}
 max_particles = 140 -- safety cap for particles to avoid FPS drops
 progress_flash = 0
-prev_progress = 0
 
 -- AUDIO ----------------------------------------------------------------------
 music_on = false
 
 -- UI STATE -------------------------------------------------------------------
-show_leaderboard = false -- flag for leaderboard visibility
-leaderboard_anim = 0 -- animation progress for leaderboard slide-in (0-1)
-reset_feedback = false -- flag for reset confirmation message
-reset_feedback_timer = 0 -- timer for reset feedback
-title_menu_index = 1 -- selected menu item on title screen (1=start,2=music,3=best times)
+-- leaderboard
+show_leaderboard = false
+leaderboard_anim = 0
+
+-- title screen menu
+title_menu_index = 1
+reset_feedback = false
+reset_feedback_timer = 0
+
+-- title logo animation
+title_fade = 0
+title_drop_y = -40
+title_drop_vy = 0
+title_bounce_done = false
+title_text_timer = 0
 
 -- ANIMATIONS -----------------------------------------------------------------
-record_anim_stage = 0 -- 0=hidden, 1=expanding, 2=flash, 3=showing, 4=shrinking
+-- record/best time display
+record_anim_stage = 0
 record_anim_timer = 0
 record_anim_x = 0
 record_anim_height = 2
--- tile respawn animation
-tile_respawn_anims = {} -- array of {x, y, timer, target_y} for animating tiles
-tile_respawn_active = false -- flag indicating if respawn animation is playing
+
+-- tile respawn effect
+tile_respawn_anims = {}
+tile_respawn_active = false
 
 -- BEST TIMES -----------------------------------------------------------------
 best_times = {} -- stores best time for each level
@@ -85,11 +94,14 @@ best_times = {} -- stores best time for each level
 -------------------------------------------------------------------------------
 
 function _init()
+    -- add native menu items
+    menuitem(1, "music: " .. (music_on and "on" or "off"), toggle_music)
+    menuitem(2, "back to title", return_to_title)
+
     -- game initialization - only on first run
     if firstinit then
         cls()
         current_level = 1
-        lives = 3
         game_state = "title"
         if music_on then
             music(0)
@@ -120,11 +132,6 @@ function _init()
     -- tile counter to clear
     tiles_left = count_tiles()
     total_tiles = tiles_left
-    if total_tiles > 0 then
-        prev_progress = tiles_left / total_tiles
-    else
-        prev_progress = 0
-    end
 
     -- clear particles
     particles = {}
@@ -165,14 +172,14 @@ function _draw()
     end
 
     -- reset camera for background
-    camera(0, 0)
-    draw_background()
 
     if game_state == "title" then
         draw_title_screen()
         return
     end
 
+    camera(0, 0)
+    draw_background()
     camera(shake_x + cam_x, shake_y + cam_y)
     draw_board()
     draw_particles(false)
@@ -277,6 +284,11 @@ end
 
 -- HELPER FUNCTIONS FOR STATE MANAGEMENT ------------------------------------
 
+function start_game()
+    game_state = "playing"
+    _init()
+end
+
 function reset_all_best_times()
     for i = 1, #levels do
         best_times[i] = nil
@@ -288,26 +300,35 @@ end
 
 function toggle_music()
     music_on = not music_on
-    if music_on then
-        music(0)
-    else
-        music(-1)
-    end
+    menuitem(1, "music: " .. (music_on and "on" or "off"), toggle_music)
+    if music_on then music(0) else music(-1) end
 end
 
-function start_game()
-    game_state = "playing"
-    _init()
+function return_to_title()
+    restart_game()
 end
 
 function restart_game()
     current_level = 1
-    lives = 3
     game_state = "title"
+
+    -- reset title fade so logo appears from darkness when returning
+    title_fade = 0
+
+    -- reset drop/bounce state so title falls in again
+    title_drop_y = -40
+    title_drop_vy = 0
+    title_bounce_done = false
 
     -- reset tile animations
     tile_respawn_anims = {}
     tile_respawn_active = false
+
+    -- reset title drop/bounce/text timer
+    title_drop_y = -40
+    title_drop_vy = 0
+    title_bounce_done = false
+    title_text_timer = 0
 end
 
 function handle_level_completion()
@@ -470,18 +491,7 @@ function update_player_falling()
     player.fall_timer += 0.08
     if player.fall_timer >= 1 then
         sfx(13)
-        lives -= 1
-        if lives <= 0 then
-            game_state = "lost"
-        else
-            reset_map()
-            cam_x = 0
-            cam_y = 0
-            level_time = 0
-            player = create_player(start_x, start_y)
-            init_player_flags(player)
-            particles = {}
-        end
+        game_state = "lost"
     end
 end
 
@@ -553,16 +563,25 @@ function update_won_state()
     end
 end
 
+function reset_level(level)
+    current_level = level or 1
+    lives = 1
+    cam_x = 0
+    cam_y = 0
+    level_time = 0
+    particles = {}
+    tile_respawn_anims = {}
+    tile_respawn_active = false
+    game_state = "playing"
+    player = create_player(start_x, start_y)
+    init_player_flags(player)
+    reset_map()
+end
+
 function update_lost_state()
     center_camera()
-    if btnp(4) then
-        lives = 3
-        game_state = "playing"
-        set_level(current_level + 1)
-    end
-    if btnp(5) then
-        restart_game()
-    end
+    if btnp(4) then reset_level(current_level + 1) end
+    if btnp(5) then reset_level(current_level) end
 end
 
 -- helper function to save current map
@@ -710,6 +729,9 @@ function update_particles()
 end
 
 function draw_particles(only_ui)
+    if not game_state == "playing" or level_transition then
+        return
+    end
     for p in all(particles) do
         -- filter by UI/world scope - early skip
         if only_ui and not p.is_ui then goto continue end
@@ -836,7 +858,6 @@ function setup_tile_respawn_animations(old_map)
                     delay = 0 -- no delay needed since we use negative timer
                 }
             )
-
             tile_respawn_active = true
         end
     end
@@ -1177,25 +1198,11 @@ function create_player(x, y)
 end
 
 -- DRAWS ---------------------------------------------------------------------
-function draw_player_shadow(cx, cy, r, col)
-    local x0 = flr(cx - r)
-    local x1 = flr(cx + r)
-    for x = x0, x1 do
-        local dx = x - cx
-        local h2 = r * r - dx * dx
-        if h2 >= 0 then
-            local dy = flr(sqrt(h2))
-            local y0 = flr(cy - dy)
-            local y1 = flr(cy + dy)
-            line(x, y0, x, y1, col)
-        end
-    end
-end
-
+-- draw player with interpolation and effects
 function draw_player(p, camx, camy)
     -- interpolate position if ball is moving
     local render_x, render_y
-    local center_x, center_y = 7, 9
+    local center_x, center_y = 7, 11
     if p.falling then
         -- during fall ball stays in center of tile (no interpolation)
         render_x = p.grid_x
@@ -1265,6 +1272,22 @@ function draw_player(p, camx, camy)
     end
 end
 
+-- draw player shadow as vertical lines within circle area
+function draw_player_shadow(cx, cy, r, col)
+    local x0 = flr(cx - r)
+    local x1 = flr(cx + r)
+    for x = x0, x1 do
+        local dx = x - cx
+        local h2 = r * r - dx * dx
+        if h2 >= 0 then
+            local dy = flr(sqrt(h2))
+            local y0 = flr(cy - dy)
+            local y1 = flr(cy + dy)
+            line(x, y0, x, y1, col)
+        end
+    end
+end
+
 -- draw tile with teleport animation
 function draw_tile_with_anim(tile, x, y)
     -- check if it's a teleport tile
@@ -1279,21 +1302,16 @@ function draw_tile_with_anim(tile, x, y)
     else
         -- normal tile drawing
         draw_tile_sprite(map_tile_to_sprite(tile), x, y)
-        -- optionally draw remaining-hit numbers for destructible tiles 1..3
-        if show_numbers and tile >= 1 and tile <= 3 then
-            local txt = tostring(tile)
-            local c = tile == 1 and 7 or (tile == 2 and 10 or 9)
-            local w = #txt * 4
-            print(txt, x + 9 - w / 2, y + 7 - tile, c)
-        end
     end
 end
 
+-- draw the game board with tiles
 function draw_board()
-    local ay = 2
+    local ay = 4
 
     if not level_transition then
-        rectfill(32 - cam_x, ay + 32 - cam_y, 96 - cam_x, ay + 96 - cam_y, 0)
+        circfill(64 - cam_x, 64 - cam_y, 44, 0)
+        -- rectfill(32 - cam_x, ay + 32 - cam_y, 96 - cam_x, ay + 96 - cam_y, 0)
     end
 
     -- helper function to draw a map with offset
@@ -1344,10 +1362,230 @@ function draw_board()
     end
 end
 
+function draw_messages()
+    -- game state messages
+    if level_cleared and level_cleared_timer < 5 then
+        local pulse = 0.5 + 0.5 * sin(t * 4)
+        local text_col = 7 + flr(pulse * 3) -- pulse between white and light colors
+        local time_text = "time: " .. format_time(level_time)
+        local text1 = "level cleared!"
+
+        -- get best time info
+        local best_time = best_times[current_level]
+        local best_text = ""
+        if best_time then
+            best_text = "best: " .. format_time(best_time)
+            width3 = #best_text * 4
+        end
+
+        -- adjust box size for additional text
+        local box_height = best_time and 78 or 70
+        rectfill(0, 50, 128, box_height, 0)
+
+        print_centered(text1, 54, text_col)
+        print_centered(time_text, 62, 7)
+
+        if best_time then
+            print_centered(best_text, 70, 6)
+        end
+    elseif game_state == "won" then
+        rectfill(0, 50, 128, 70, 0)
+        print_centered("all levels complete!", 54, 11)
+        print_centered("press \x97 to restart", 62, 7)
+    elseif game_state == "lost" then
+        rectfill(0, 50, 128, 80, 0)
+        print_centered("game over", 54, 8)
+        print_centered("press \x97 to restart", 62, 7)
+        print_centered("press \x8e for next level", 70, 7)
+    end
+    -- draw new dynamic record animation (replaces old record message)
+    draw_record_animation()
+end
+
+function draw_gui()
+    rectfill(0, 0, 128, 9, 0)
+    line(0, 9, 128, 9, 1)
+    -- draw level info in center
+    local level_text = "level " .. current_level
+    print(level_text, 2, 2, 5)
+    print(level_text, 2, 1, 7)
+
+    -- draw time counter in mm:ss format (right side)
+    local time_text = format_time(level_time)
+    local time_width = #time_text * 4
+    print(time_text, 128 - time_width - 2, 2, 5)
+    print(time_text, 128 - time_width - 2, 1, 7)
+    -- clock icon
+    spr(128, 96, 0)
+end
+
+function draw_title_screen()
+    local title_x = 33
+    local title_y = 20
+    local menu_x = 64
+    local menu_y = 70
+    local menu_spacing = 11
+    local pulse = sin(t * 2) * 0.5 + 0.5
+
+    if title_bounce_done then draw_background() else cls() end
+
+    if not show_leaderboard then
+        circfill(64, 64, 48, 0)
+
+        -- update title fade (0..1)
+        title_fade = mid(0, (title_fade or 0) + 0.05, 1)
+
+        -- simple drop + bounce physics for title logo
+        if title_bounce_done == nil then title_bounce_done = false end
+        if not title_bounce_done then
+            title_drop_vy = (title_drop_vy or 0) + 0.9 -- gravity
+            title_drop_y = (title_drop_y or -40) + title_drop_vy
+            if title_drop_y >= 0 then
+                title_drop_y = 0
+                -- bounce with damping
+                title_drop_vy = -title_drop_vy * 0.45
+                -- stop when bounce is tiny
+                if abs(title_drop_vy) < 0.6 then
+                    title_drop_vy = 0
+                    title_bounce_done = true
+                end
+            end
+        end
+
+        local cur_y = title_y + (title_drop_y or 0)
+
+        -- map palette to simulate brightening: dark -> mid -> bright -> original
+        if title_fade < 1 then
+            if title_fade < 0.33 then
+                for c = 1, 15 do
+                    pal(c, 1)
+                end
+            elseif title_fade < 0.66 then
+                for c = 1, 15 do
+                    pal(c, 7)
+                end
+            elseif title_fade < 0.88 then
+                for c = 1, 15 do
+                    pal(c, 12)
+                end
+            else
+                for c = 1, 15 do
+                    pal(c, c)
+                end
+            end
+        end
+
+        -- title sprites (draw with current palette remap and vertical offset)
+        for i = 0, 7 do
+            spr(136 + i, title_x + i * 8, cur_y)
+            spr(152 + i, title_x + i * 8, cur_y + 8)
+            spr(168 + i, title_x + i * 8, cur_y + 16)
+            spr(184 + i, title_x + i * 8, cur_y + 24)
+        end
+
+        -- restore default palette so UI text draws normally
+        pal()
+
+        -- draw title text using same vertical offset so it moves with the logo
+        if title_bounce_done then
+            title_text_timer = (title_text_timer or 0) + 1 / 30
+            local delay = 0.3
+            local flash_dur = 0.6
+            if title_text_timer >= delay then
+                local ft = title_text_timer - delay
+                if ft < flash_dur then
+                    local pulse = sin(t * 20)
+                    local col = pulse > 0 and 7 or 10
+                    print_centered("BOUNCING", cur_y - 8, col, 4)
+                    print_centered("BY PRAgHUS", cur_y + 34, col, 4)
+                else
+                    print_centered("BOUNCING", cur_y - 8, 10, 4)
+                    print_centered("BY PRAgHUS", cur_y + 34, 10, 4)
+                end
+            end
+
+            print("V1.1", 110, 120, 6)
+
+            if not title_menu_index then title_menu_index = 1 end
+
+            local items = {
+                "start",
+                (music_on and "music: on" or "music: off"),
+                "best times"
+            }
+
+            for i = 1, #items do
+                local yy = menu_y + (i - 1) * menu_spacing
+                if i == title_menu_index then
+                    rectfill(menu_x - 32, yy - 2, menu_x + 32, yy + 6, 8)
+                    print_centered(items[i], yy, 7)
+                else
+                    print_centered(items[i], yy, 6, 1)
+                end
+            end
+        end
+    end
+
+    -- draw sliding leaderboard
+    if leaderboard_anim > 0 then
+        draw_leaderboard()
+    end
+end
+
+-- draw the leaderboard table sliding from bottom
+function draw_leaderboard()
+    -- center the board on screen
+    local board_width = 100
+    local board_height = 100
+    local board_x = (128 - board_width) / 2
+    local board_y = (128 - board_height) / 2 - (board_height * (1 - leaderboard_anim))
+    local k = flr(2 * cos(t * 4))
+
+    rectfill(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 0)
+    rect(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 1)
+
+    -- layout
+    local col_width = board_width / 2
+    local start_x1 = board_x + 8
+    local start_x2 = board_x + col_width + 8
+    local start_y = board_y + 20
+    local row_height = 8
+    local levels_per_column = 8
+
+    local total_levels = #levels
+    local max_display = min(total_levels, levels_per_column * 2)
+    local bt = best_times
+
+    for i = 1, max_display do
+        local col = 1
+        local row_index = i
+        local x = start_x1
+
+        if i > levels_per_column then
+            col = 2
+            row_index = i - levels_per_column
+            x = start_x2
+        end
+
+        local y_pos = start_y + (row_index - 1) * row_height
+
+        print(tostring(i), x, y_pos, 6)
+
+        local value = bt[i]
+        if value then
+            print(format_time(value), x + 12, y_pos, 11)
+        else
+            print("--:--", x + 12, y_pos, 5)
+        end
+    end
+
+    print_centered("\x8e+\x97 reset records", board_y + 8, 9, 4)
+    print_centered("press \x83 to close", board_y + board_height - 12, 6, 5)
+end
+
 function draw_background()
-    -- if level_transition then
-    --     cls()
-    -- else
+    -- if level_transition then cls() end
+
     rectfill(16 - cam_x, 16 - cam_y, 112 - cam_x, 114 - cam_y, 0)
 
     for i = 0, 999 do
@@ -1369,176 +1607,6 @@ function draw_background()
     -- end
 end
 
-function draw_messages()
-    -- game state messages
-    if level_cleared and level_cleared_timer < 5 then
-        local pulse = 0.5 + 0.5 * sin(t * 4)
-        local text_col = 7 + flr(pulse * 3) -- pulse between white and light colors
-        local time_text = "time: " .. format_time(level_time)
-        local text1 = "level cleared!"
-
-        -- get best time info
-        local best_time = best_times[current_level]
-        local best_text = ""
-        if best_time then
-            best_text = "best: " .. format_time(best_time)
-            width3 = #best_text * 4
-        end
-
-        -- adjust box size for additional text
-        local box_height = best_time and 78 or 70
-        rectfill(20, 50, 108, box_height, 0)
-
-        print_centered(text1, 54, text_col)
-        print_centered(time_text, 62, 7)
-
-        if best_time then
-            print_centered(best_text, 70, 6)
-        end
-    elseif game_state == "won" then
-        rectfill(20, 50, 108, 70, 0)
-        print_centered("all levels complete!", 54, 11)
-        print_centered("press \x97 to restart", 62, 7, -2)
-    elseif game_state == "lost" then
-        rectfill(16, 50, 112, 80, 0)
-        print_centered("game over", 54, 8)
-        print_centered("press \x97 to restart", 62, 7, -2)
-        print_centered("press \x8e for next level", 70, 7, -2)
-    end
-
-    -- draw new dynamic record animation (replaces old record message)
-    draw_record_animation()
-end
-
-function draw_gui()
-    rectfill(0, 0, 128, 9, 0)
-    -- draw balls representing lives (at bottom)
-    for i = 1, lives do
-        local x = 4 + (i - 1) * 8
-        local y = 4
-        -- miniature red ball
-        circfill(x, y, 3, 0) -- shadow
-        circfill(x, y, 2, 8) -- red ball
-        circfill(x - 1, y - 1, 0.5, 7) -- sparkle
-    end
-
-    -- draw level info in center
-    local level_text = "level " .. current_level
-    print_centered(level_text, 2, 7)
-
-    -- draw time counter in mm:ss format (right side)
-    local time_text = format_time(level_time)
-    local time_width = #time_text * 4
-    print(time_text, 128 - time_width - 2, 2, 7)
-end
-
-function draw_title_screen()
-    local title_x = 33
-    local title_y = 28
-    local menu_x = 64
-    local menu_y = 72
-    local menu_spacing = 11
-    local pulse = sin(t * 2) * 0.5 + 0.5
-    local color = flr(pulse * 6) + 8
-    local k = flr(2 * cos(t * 4))
-
-    if not show_leaderboard then
-        rectfill(15, 15, 113, 113, 0)
-        rect(14 + k, 14 + k, 114 + 0.9999 - k, 114 + 0.9999 - k, 1)
-
-        -- title sprites
-        for i = 0, 7 do
-            spr(136 + i, title_x + i * 8, title_y)
-            spr(152 + i, title_x + i * 8, title_y + 8)
-            spr(168 + i, title_x + i * 8, title_y + 16)
-            spr(184 + i, title_x + i * 8, title_y + 24)
-            -- spr(128 + i, title_x + i * 8, title_y - 2)
-            spr(144 + i, title_x + i * 8, title_y + 28)
-        end
-
-        if not title_menu_index then title_menu_index = 1 end
-
-        local items = {
-            "start",
-            (music_on and "music: on" or "music: off"),
-            "best times"
-        }
-
-        for i = 1, #items do
-            local yy = menu_y + (i - 1) * menu_spacing
-            if i == title_menu_index then
-                rectfill(menu_x - 32 + k, yy - 2, menu_x + 32 + 0.9999 - k, yy + 6, 8)
-                print_centered(items[i], yy, 7)
-            else
-                print_centered(items[i], yy, 6)
-            end
-        end
-    end
-
-    -- draw sliding leaderboard
-    if leaderboard_anim > 0 then
-        draw_leaderboard()
-    end
-end
-
--- draw the leaderboard table sliding from bottom
-function draw_leaderboard()
-    -- center the board on screen
-    local board_width = 100
-    local board_height = 100
-    local board_x = (128 - board_width) / 2
-    local board_y = (128 - board_height) / 2 - (board_height * (1 - leaderboard_anim))
-    local k = flr(2 * cos(t * 4))
-
-    rectfill(board_x, board_y, board_x + board_width, board_y + board_height, 0)
-    rect(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 1)
-
-    -- display levels in 2 columns
-    local col_width = board_width / 2
-    local start_x1 = board_x + 8
-    -- left column
-    local start_x2 = board_x + col_width + 8
-    -- right column
-    local start_y = board_y + 20
-    local row_height = 8
-    local levels_per_column = 8
-
-    -- left column
-    for i = 1, min(#levels, levels_per_column) do
-        local y_pos = start_y + (i - 1) * row_height
-        -- level number
-        print(tostring(i), start_x1, y_pos, 6)
-        -- time
-        if best_times[i] then
-            local time_str = format_time(best_times[i])
-            print(time_str, start_x1 + 12, y_pos, 11)
-        else
-            print("--:--", start_x1 + 12, y_pos, 5)
-        end
-    end
-
-    -- right column (if there are more levels)
-    if #levels > levels_per_column then
-        for i = levels_per_column + 1, min(#levels, levels_per_column * 2) do
-            local row_index = i - levels_per_column
-            local y_pos = start_y + (row_index - 1) * row_height
-            -- level number
-            print(tostring(i), start_x2, y_pos, 6)
-            -- time
-            if best_times[i] then
-                local time_str = format_time(best_times[i])
-                print(time_str, start_x2 + 12, y_pos, 11)
-            else
-                print("--:--", start_x2 + 12, y_pos, 5)
-            end
-        end
-    end
-
-    print_centered("\x8e+\x97 reset records", board_y + 6, 6, -4)
-    -- print("\x83 close", board_x + board_width / 2 - 16, board_y + board_height - 10, 7)
-    print_centered("\x83 close", board_y + board_height - 10, 7, -2)
-end
-
 -- helper to draw 2x2 sprite tile
 function draw_tile_sprite(base_sprite, x, y)
     spr(base_sprite, x, y)
@@ -1554,10 +1622,22 @@ function map_tile_to_sprite(id) return tile_sprite_map[id] or id end
 function tile_to_px(x, y) return 0 + x * tile_size + 8, y * tile_size + 8 end
 
 -- helper for centered text printing
-function print_centered(text, y, col, offset_x)
-    local width = #text * 4
-    local ox = offset_x or 0
-    print(text, 65 + ox - width / 2, y, col)
+function print_centered(text, y, col, shadow_col)
+    -- compute pixel width of the string: normal chars = 4px, special/icon bytes (>=128) = 8px
+    local width = 0
+    for i = 1, #text do
+        local ch = sub(text, i, i)
+        local code = ord(ch)
+        if code >= 128 then
+            width += 8
+        else
+            width += 4
+        end
+    end
+    if shadow_col then
+        print(text, 65 - width / 2, y + 1, shadow_col)
+    end
+    print(text, 65 - width / 2, y, col)
 end
 
 -- trigger camera shake effect
@@ -1678,29 +1758,24 @@ function update_record_animation()
     record_anim_timer += 0.08
 
     if record_anim_stage == 1 then
-        -- phase 1: draw 1px line from x=128, slide left to x=0, keeping width=128 (FASTER)
         record_anim_height = 1
         record_anim_width = 128
         record_anim_x = lerp(0, 128, min(1, record_anim_timer)) -- slide from right to left
 
         if record_anim_timer >= 0.5 then
-            -- FASTER: 0.5s instead of 1s
             record_anim_stage = 2
             record_anim_timer = 0
         end
     elseif record_anim_stage == 2 then
-        -- phase 2: line at x=0 expands vertically 1pxヌ●★16px, width stays 128px (FASTER)
         record_anim_x = 0
         record_anim_width = 128
         record_anim_height = lerp(16, 1, min(1, record_anim_timer))
 
         if record_anim_timer >= 0.3 then
-            -- EVEN FASTER: 0.3s for lineヌ●★rectangle transition
             record_anim_stage = 3
             record_anim_timer = 0
         end
     elseif record_anim_stage == 3 then
-        -- phase 3: show message for 2 seconds
         record_anim_x = 0
         record_anim_width = 128
         record_anim_height = 11
@@ -1710,24 +1785,20 @@ function update_record_animation()
             record_anim_timer = 0
         end
     elseif record_anim_stage == 4 then
-        -- phase 4: rectangle shrinks vertically 16pxヌ●★1px, width stays 128px (FASTER)
         record_anim_x = 0
         record_anim_width = 128
         record_anim_height = lerp(1, 16, min(1, record_anim_timer))
 
         if record_anim_timer >= 0.5 then
-            -- FASTER: 0.5s instead of 1s
             record_anim_stage = 5
             record_anim_timer = 0
         end
     elseif record_anim_stage == 5 then
-        -- phase 5: shrink width from 128px to 0px (height already 1px from phase 4) (FASTER)
         record_anim_x = 0
-        record_anim_height = 1 -- keep as 1px line (already set by phase 4)
+        record_anim_height = 1
         record_anim_width = lerp(0, 128, min(1, record_anim_timer))
 
         if record_anim_timer >= 0.5 then
-            -- FASTER: 0.5s instead of 1s
             record_anim_stage = 0
             record_anim_timer = 0
         end
@@ -1813,22 +1884,22 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-0000000000000000000000000000000000aaaaaaaaaaaaa00000000000000000000000000000000076666666666666600ddddddddddddd0006666666666666d0
-000000000000000000999999999999000aaaaaaaaaaaaaaa000000000000000000000000000000006555555555555565ddddddddddddddd1666666666666666d
-0000000000000000099ffffff9f999900aa24444444442aa00cccccccccccc0000bbbbbbbbbbbb006d66666666666d65ddddddddddddddd1666666666666666d
-000888888888800009f99999999999900aa9aaaaaaaaa9aa0cccccccccccccc00bbbbbbbbbbbbbb06d65666666656d65dddd5ddddd5dddd1666d66666666d66d
-0087e8888888880009f99999999999900aa9aaaaaaaaa9aa0cc1111111111cc00bb1111111111bb06d67666666676d65ddd516ddd516ddd1666766666666766d
-008e88888888880009999999999999900aa9aaaaaaaaa9aa0cc1dddddddd1cc00bb1333333331bb06d66666666666d65dddd6ddddd6dddd1666666666666666d
-008888888888880009f99999999999900aa9aaaaaaaaa9aa0cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666665ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aa9aaaaaaaaa9aa0cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666d65ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aa9aaaaaaaaa9aa0cc1cccccccc1cc00bb1bbbbbbbb1bb06666666666666665ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aa9aaaaaaaaaaaa0cc5cccccccc5cc00bb3bbbbbbbb3bb06d66666666666665dddd5ddddd5dddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaaa0cccccccccccccc00bbbbbbbbbbbbbb0666d6666666d6665ddd516ddd516ddd1666666666666666d
-0088888888888800099999999999999007aaaaaaaaaaaaa70cc5cccccccc5cc00bb3bbbbbbbb3bb06667666666676665dddd6ddddd6dddd1666d66666666d66d
-00e8888888888e000f999999999999f009777777777777790cccccccccccccc00bbbbbbbbbbbbbb06666666666666665ddddddddddddddd1666766666666766d
-0027eeeeeeeee200047fffffffffff4004999999999999940dccccccccccccd006bbbbbbbbbbbb6066666666666666656ddddddddddddd61766666666666667d
-001222222222210000444444444444000244444444444442056ddddddddddd50057666666666665077777777777777751666666666666610d7777777777777dd
-00000000000000000000000000000000002222222222222000555555555555000055555555555500055555555555555001111111111111000dddddddddddddd0
+0000000000000000000000000000000000aaaaaaaaaaaa000000000000000000000000000000000006666666666666000ddddddddddddd0006666666666666d0
+000000000000000000999999999999000aaaaaaaaaaaaaa0000000000000000000000000000000006555555555555560ddddddddddddddd1666666666666666d
+000888888888800009999999999999900aa444aaaaaaaaa000cccccccccccc0000bbbbbbbbbbbb006d66666666666d60ddddddddddddddd1666666666666666d
+0088888888888800099aa999999999900aaa99aaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb06d65666666656d60dddd5ddddd5dddd1666d66666666d66d
+0088ff88888888000999a999999999900aaaa9aaaaaaaaa00cc1111111111cc00bb1111111111bb06d67666666676d60ddd516ddd516ddd1666766666666766d
+00888f8888888800099a9999999999900aa999aaaaaaaaa00cc1dddddddd1cc00bb1333333331bb06d66666666666d60dddd6ddddd6dddd1666666666666666d
+00888f8888888800099aa999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666660ddddddddddddddd1666666666666666d
+008888888888880009999999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666d60ddddddddddddddd1666666666666666d
+008888888888880009999999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06666666666666660ddddddddddddddd1666666666666666d
+008888888888880009999999999999900aaaaaaaaaaaaaa00cc5cccccccc5cc00bb3bbbbbbbb3bb06d66666666666660dddd5ddddd5dddd1666666666666666d
+008888888888880009999999999999900aaaaaaaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb0666d6666666d6660ddd516ddd516ddd1666666666666666d
+00e8888888888e00099999999999999007aaaaaaaaaaaa700cc5cccccccc5cc00bb3bbbbbbbb3bb06667666666676660dddd6ddddd6dddd1666d66666666d66d
+0027eeeeeeeee2000f999999999999f009777777777777900cccccccccccccc00bbbbbbbbbbbbbb06666666666666660ddddddddddddddd1666766666666766d
+0002222222222000047fffffffffff4004999999999999400dccccccccccccd006bbbbbbbbbbbb6066666666666666606ddddddddddddd61766666666666667d
+000000000000000000444444444444000299999999999920056ddddddddddd500576666666666650d7777777777777501666666666666610d7777777777777dd
+00000000000000000000000000000000002222222222220000555555555555000055555555555500055555555555550001111111111111000dddddddddddddd0
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000
 07000000007000000007000000007000000700000070000000770000000070000000000000000000000000000000700000000000000000000000000000000000
@@ -1861,21 +1932,21 @@ __gfx__
 00000000000010000001710000177710000171000000100000000000000011100007770000770000000777000000111000000000000000000000000000000000
 00000000000000000000100000017100000010000000000000000000000000000001110000777000000111000000000000000000000000000000000000000000
 00000000000000000000000000001000000000000000000000000000000000000000000000111000000000000000000000000000000000000000000000000000
-00000000000000000790000000000000000000000000970000000000000000007ffffffffffff7007ffffffff0000000ffffffff000ffffffffffffff0000000
-0000000000000000090909990909099000990909900909000000000000000000e8888888888888f2e8888888ff00000f88888888ffdf8888888888888f000000
-0000000000000000099009090909090909000009090900000000000000000000e88888888888888fe88888888e1000f88888888888e288888888888888f00000
-0000000000000000090909090909090909000909090909000000000000000000e888888888888888f88888888e100e8888888888888e288888888888888e0000
-0000000000000000099909990999090900990909090099000000000000000000e888888222888888e28888888e11e88888888888888e128888222888888e0000
-0000000000000000000000000000000000000000000000000000000000000000e8888821112888888e288888e0112888888888888888e128821112888888e000
-00000000000000000000000000000000000000000000000000000000000000000e888821100288888e288888e0128888888222288888e128821100288888e100
-00000000000000000000000000000000000000000000000000000000000000000e888821100288888e088888e01288888821111288888e12821100288888e100
+00666000000000000000000000000000000000000000000000000000000000007ffffffffffff7007ffffffff0000000ffffffff000ffffffffffffff0000000
+0655560000000000000000000000000000000000000000000000000000000000e8888888888888f2e8888888ff00000f88888888ffdf8888888888888f000000
+6506056000000000000000000000000000000000000000000000000000000000e88888888888888fe88888888e1000f88888888888e288888888888888f00000
+6006606000000000000000000000000000000000000000000000000000000000e888888888888888f88888888e100e8888888888888e288888888888888e0000
+6005506000000000000000000000000000000000000000000000000000000000e888888222888888e28888888e11e88888888888888e128888222888888e0000
+5600065000000000000000000000000000000000000000000000000000000000e8888821112888888e288888e0112888888888888888e128821112888888e000
+05666500000000000000000000000000000000000000000000000000000000000e888821100288888e288888e0128888888222288888e128821100288888e100
+00555000000000000000000000000000000000000000000000000000000000000e888821100288888e088888e01288888821111288888e12821100288888e100
 00000000000000000000000000000000000000000000000000000000000000000e888821100288888e088888e01288888821000288888e11821100288888e100
 00000000000000000000000000000000000000000000000000000000000000000e88882110028888e0188888e01288888821100288888e1182110028888e1100
-000000000000007000000000aa000000000000070000000777000000000000000e88882110028888e0188888e01288888821100288888e1182110028888e1100
-00000000000000aa00a0a000a0a00a00a00aaa0aa00a0a0aa0000000000000000e8888211128888e01888888e01288888821100288888e118211128888e11100
-00000000000000909090900099009009090909090909090009000000000000000e888882118888e001888888e01288888821100288888e11182118888e111000
-00000000000000999099900090009009990999090909990999000000000000000e8888888888ee0012888888e01288888821100288888e111888888ee1111000
-00000000000000000000900000000000000009000000000000000000000000000e888888888888e001288888e01288888821100288888e11188888888e110000
+00000000000000000000000000000000000000000000000000000000000000000e88882110028888e0188888e01288888821100288888e1182110028888e1100
+00000000000000000000000000000000000000000000000000000000000000000e8888211128888e01888888e01288888821100288888e118211128888e11100
+00000000000000000000000000000000000000000000000000000000000000000e888882118888e001888888e01288888821100288888e11182118888e111000
+00000000000000000000000000000000000000000000000000000000000000000e8888888888ee0012888888e01288888821100288888e111888888ee1111000
+00000000000000000000000000000000000000000000000000000000000000000e888888888888e001288888e01288888821100288888e11188888888e110000
 00000000000000000000000000000000000000000000000000000000000000000e8888822288888e01288888e01288888821100288888e111822288888e10000
 00000000000000000000000000000000000000000000000000000000000000000e28882111288888e0128888e01228888821100288882e1112111288888e0000
 00000000000000000000000000000000000000000000000000000000000000000e228221100228822e112282e01222222221100288222e11121100228822e000
@@ -1893,6 +1964,136 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000001111111111111111111011111111111111101111111111101111111111111100
 00000000000000000000000000000000000000000000000000000000000000001111111111111111110011111111111111110111111111011111111111111000
 00000000000000000000000000000000000000000000000000000000000000000111111111111111000001111111111111100001111100001111111111100000
+__label__
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00088800000888000008880000000000000000000000000007000777070707770700000007700707000000000000000000000000007770777000007770777000
+00878880008788800087888000000000000000000000000007000700070707000700000000700707000000000000000000000000007070707007007070007000
+00888880008888800088888000000000000000000000000007000770070707700700000000700777000000000000000000000000007070707000007070077000
+00888880008888800088888000000000000000000000000007000700077707000700000000700007000000000000000000000000007070707007007070007000
+00088800000888000008880000000000000000000000000007770777007007770777000007770007000000000000000000000000007770777000007770777000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+00000100011110000013300000000100001100001110000000131010000010003110000000100000000001001000010000000010000000000000101111111330
+00000000101110000111310000000000000000000110000000111100001001033311100001100000000110000000000000000100001000000011111111130100
+00000000001111000011111000000000000000000011000101111000001110003111100001100000000110000000000000000000000000000311111011331110
+00000001100111100001111000000000000000000000000000111000000000003100000001110100000100000010000000010000000000003111110001101103
+00000000111001110000010111101000000000000000000000010000000000000000000001110100000000000000000000111000000000001111000001000103
+00000001110000101000000000111100000000000000000000100000000000000000000000111000000000000000000000010011000000000100000000101000
+13031101001001110000088888001000000000001000000000000000000000000000000000000000000000000000000001000000000000000000000000000000
+113110111000000000777eeeee880000000000011110000000000000000000000000000000000000100000000000000011100000000000000000000100000000
+1110000100000000077777eeeee88000000000001110000000000000000000000000000000000000110000000000000001000000000000000000000000000000
+11000011100000007777777eeeee880000000000000000000000000000000000000000000000000010aaaaaaaaaaaa0000000000100000000000010100100000
+11101001100000007777777eeeeee8800000000000001000000000000000000000000000000000000aaaaaaaaaaaaaa000999999999999000000011000000001
+00013000100000007777777eeeeeee800008888888888100001000000000000000088888888880000aa444aaaaaaaaa009999999999999900000010000000001
+0103300000000008877777eeeeeeee880088888888888800010000000000000000888888888888000aaa99aaaaaaaaa0099aa999999999900000000000000000
+11103300000001088e777eeeeeeeee880088ff888888880000000000000000000088ff88888888000aaaa9aaaaaaaaa00999a999999999900000000000000000
+31103331000000088eeeeeeeeeeeee2800888f8888888800000000000000000000888f88888888000aa999aaaaaaaaa0099a9999999999900000000000000001
+11110310000000088eeeeeeeeeeeee2800888f8888888800000000000000000000888f88888888000aaaaaaaaaaaaaa0099aa999999999900000000000010011
+311111110000000888eeeeeeeeeee2280088888888888800000000000000000000888888888888000aaaaaaaaaaaaaa009999999999999900000100000011011
+1111111000000000882eeeeeeeee22200088888888888800000000000000000000888888888888000aaaaaaaaaaaaaa009999999999999900000000000111333
+11111011000000008822eeeeeee222200088888888888800000000000000000000888888888888000aaaaaaaaaaaaaa009999999999999900000010001113333
+111100010100000008822eeeee2222050088888888888800000000000000000000888888888888000aaaaaaaaaaaaaa009999999999999900000011113133333
+1111000000000000008822222222200500e8888888888e00000000000000000000e8888888888e0007aaaaaaaaaaaa7009999999999999900000000011313113
+110110000000000060088222222200650027eeeeeeeee20000000000000000000027eeeeeeeee20009777777777777900f999999999999f00000000000001111
+100000000000010066600822222066650002222222222000000000000000000000022222222220000499999999999940147fffffffffff400000000000001111
+11000000000000007777700000777775000000000000000000000000000000000000000000000000029999999999992001444444444444000011111000011330
+01100030000010000555555555555550000000000000000000000000000000000000000000000000002222222222220000000000000000000001010100110300
+011103330001110076666666666666600000000000000000766666666666666000aaaaaaaaaaaa00000000000000000000000000000000000000000010111000
+11111131000010006555555555555565000000000000000065555555555555650aaaaaaaaaaaaaa0009999999999990000999999999999000000000110313000
+01111111100000006d66666666666d6500088888888880006d66666666666d650aa444aaaaaaaaa0099999999999999009999999999999900000001000030030
+31111111000001006d65666666656d6500888888888888006d65666666656d650aaa99aaaaaaaaa0099aa99999999990099aa999999999900000010030303333
+33031001000011106d67666666676d650088ff88888888006d67666666676d650aaaa9aaaaaaaaa00999a999999999900999a999999999900000101030333330
+30000000000001006d66666666666d6500888f88888888006d66666666666d650aa999aaaaaaaaa0099a999999999990099a9999999999900000000000001000
+31000000000000006d6666666666666500888f88888888006d666666666666650aaaaaaaaaaaaaa0099aa99999999990099aa999999999900000001000011100
+00000000000001006d66666666666d6500888888888888006d66666666666d650aaaaaaaaaaaaaa0099999999999999009999999999999900000010100101000
+00001000000000006666666666666665008888888888880066666666666666650aaaaaaaaaaaaaa0099999999999999009999999999999900000000001110300
+00010100000001006d6666666666666500888888888888006d666666666666650aaaaaaaaaaaaaa0099999999999999009999999999999900000000333100000
+0100000000000000666d6666666d66650088888888888800666d6666666d66650aaaaaaaaaaaaaa0099999999999999009999999999999900000003033310000
+0000000000000000666766666667666500e8888888888e00666766666667666507aaaaaaaaaaaa70099999999999999009999999999999900000000303111000
+000001010000000066666666666666650027eeeeeeeee200666666666666666509777777777777900f999999999999f00f999999999999f00000003111111110
+01011110000000006666666666666665000222222222200066666666666666650499999999999940047fffffffffff40047fffffffffff400000011111101001
+11111010010000007777777777777775000000000000000077777777777777750299999999999920004444444444440000444444444444000000010111100000
+01110000011000000555555555555550000000000000000005555555555555500022222222222200000000000000000000000000000000000010011111110000
+00101000011110007666666666666660766666666666666076666666666666600000000000000000000000000000000000000000000000000000000111100000
+10000000011111006555555555555565655555555555556565555555555555650000000000000000000000000000000000000000000000000000000110000000
+31000000011111006d66666666666d656d66666666666d656d66666666666d650000000000000000000888888888800000088888888880000000011110000001
+31000000010010006d65666666656d656d65666666656d656d65666666656d650000000000000000008888888888880000888888888888000000000100000011
+11100000000000006d67666666676d656d67666666676d656d67666666676d6500000000000000000088ff88888888000088ff88888888000110000000000001
+11110000000000006d66666666666d656d66666666666d656d66666666666d65000000000000000000888f888888880000888f88888888000010000000000000
+31311110001000006d666666666666656d666666666666656d66666666666665000000000000000000888f888888880000888f88888888000000000000000000
+03333111111111006d66666666666d656d66666666666d656d66666666666d650000000000000000008888888888880000888888888888000000000000001010
+10300310311111006666666666666665666666666666666566666666666666650000000000000000008888888888880000888888888888000000000000010303
+00003033000011006d666666666666656d666666666666656d666666666666650000000000000000008888888888880000888888888888000000100011000033
+3003033330300000666d6666666d6665666d6666666d6665666d6666666d66650000000000000000008888888888880000888888888888000031000000000003
+3000003000000000666766666667666566676666666766656667666666676665000000000000000000e8888888888e0000e8888888888e000333000000000010
+110000000000000066666666666666656666666666666665666666666666666500000000000000000027eeeeeeeee2000027eeeeeeeee2000030001000100111
+01000000000100106666666666666665666666666666666566666666666666650000000000000000000222222222200000022222222220000001111101000010
+00000000001111117777777777777775777777777777777577777777777777750000000000000000000000000000000000000000000000000011111111100000
+00000000000100110555555555555550055555555555555005555555555555500000000000000000000000000000000000000000000000000001001101000000
+00000000010000000001000000000000766666666666666000000000000000000000000000000000000000000000000000000000000000000000000000103030
+00000000111000010000000000000000655555555555556500000000000000000000000000000000000000000000000000000000000000000000000000000300
+100001010100001000bbbbbbbbbbbb006d66666666666d6500bbbbbbbbbbbb000000000000000000000000000000000000000000000000000000000100100111
+03033133100000010bbbbbbbbbbbbbb06d65666666656d650bbbbbbbbbbbbbb00000000000000000000000000000000000000000000000000000000000113331
+33331333100000000bb1111111111bb06d67666666676d650bb1111111111bb00000000000000000000000000000000000000000000000000000000000103031
+03001130110000000bb1333333331bb06d66666666666d650bb1333333331bb00000000000000000000000000000000000000000000000000001110000100001
+00000101101000000bb1bbbbbbbb1bb06d666666666666650bb1bbbbbbbb1bb00000000000000000000000000000000000000000000000000000111331110001
+10000001100011000bb1bbbbbbbb1bb06d66666666666d650bb1bbbbbbbb1bb00000000000000000000000000000000000000000000000000000013333100000
+00000000000001000bb1bb77777b1bb066666666666666650bb1bb77777b1bb00000000000000000000000000000000000000000000000000000010331110031
+33000000000000000bb3bb17771b3bb06d666666666666650bb3bb17771b3bb00000000000000000000000000000000000000000000000000010010131311111
+00000000000100000bbbbbb171bbbbb0666d6666666d66650bbbbbb171bbbbb00000000000000000000000000000000000000000000000000100100333111131
+00000010101110000bb3bbbb1bbb3bb066676666666766650bb3bbbb1bbb3bb00000000000000000000000000000000000000000000000000000010111313333
+00000111111100010bbbbbbbbbbbbbb066666666666666650bbbbbbbbbbbbbb00000000000000000000000000000000000000000000000000000001111133333
+000000130000000006bbbbbbbbbbbb60666666666666666506bbbbbbbbbbbb600000000000000000000000000000000000000000000000000000010111013331
+00000000000000000576666666666650777777777777777505766666666666500000000000000000000000000000000000000000000000000000001111001333
+10010000000000110055555555555500055555555555555000555555555555000000000000000000000000000000000000000000000000000000001110000133
+01111000001101117666666666666660766666666666666076666666666666607666666666666660766666666666666000000000000000000000000100000033
+11111000111110106555555555555565655555555555556565555555555555656555555555555565655555555555556500999999999999000000100003310003
+11111001111100006d66666666666d656d66666666666d656d66666666666d656d66666666666d656d66666666666d6509999999999999900010111011111000
+11100000100000006d65666666656d656d65666666656d656d65666666656d656d65666666656d656d65666666656d65099aa999999999900100011111111113
+10000000000010006d67666666676d656d67666666676d656d67666666676d656d67666666676d656d67666666676d650999a999999999900110111001011100
+00000000103111006d66666666666d656d66666666666d656d66666666666d656d66666666666d656d66666666666d65099a9999999999900001111110001000
+00000031333310006d666666666666656d666666666666656d666666666666656d666666666666656d66666666666665099aa999999999900001111111013000
+00001333133330006d66666666666d656d66666666666d656d66666666666d656d66666666666d656d66666666666d6509999999999999900001001011133301
+00003331111300006666666666666665666666666666666566666666666666656666666666666665666666666666666509999999999999900000000101133311
+00033301100000006d666666666666656d666666666666656d666666666666656d666666666666656d6666666666666509999999999999900000001011113111
+0000331100000001666d6666666d6665666d6666666d6665666d6666666d6665666d6666666d6665666d6666666d666509999999999999900000010111111011
+00003111000000006667666666676665666766666667666566676666666766656667666666676665666766666667666509999999999999900000100011010111
+0101111110000000666666666666666566666666666666656666666666666665666666666666666566666666666666650f999999999999f00000010000000010
+131111101000110066666666666666656666666666666665666666666666666566666666666666656666666666666665047fffffffffff400000000000000000
+33313111000001007777777777777775777777777777777577777777777777757777777777777775777777777777777500444444444444000000000000000110
+33303010000000000555555555555550055555555555555005555555555555500555555555555550055555555555555000000000000000000000110001000011
+333300000100000000aaaaaaaaaaaa0000aaaaaaaaaaaa0000000000000000000000000000000000766666666666666000000000000000000001111010110113
+33300000010000000aaaaaaaaaaaaaa00aaaaaaaaaaaaaa000000000000000000000000000000000655555555555556500000000000000000000111100010133
+33300000100000000aa444aaaaaaaaa00aa444aaaaaaaaa0000888888888800000bbbbbbbbbbbb006d66666666666d6500088888888880000000001010001111
+33300001000000000aaa99aaaaaaaaa00aaa99aaaaaaaaa000888888888888000bbbbbbbbbbbbbb06d65666666656d6500888888888888000000033033000111
+03000011000000000aaaa9aaaaaaaaa00aaaa9aaaaaaaaa00088ff88888888000bb1111111111bb06d67666666676d650088ff88888888000000003333300011
+00000111000000000aa999aaaaaaaaa00aa999aaaaaaaaa000888f88888888000bb1333333331bb06d66666666666d6500888f88888888000011033333300031
+00000100000000000aaaaaaaaaaaaaa10aaaaaaaaaaaaaa000888f88888888000bb1bbbb7bbb1bb06d6666666666666500888f88888888000000013101300003
+00000000100000000aaaaaaaaaaaaaa11aaaaaaaaaaaaaa000888888888888000bb1bbbb77bb1bb06d66666666666d6500888888888888000000003311130110
+00000001000000000aaaaaaaaaaaaaa10aaaaaaaaaaaaaa000888888888888000bb1bbbb777b1bb0666666666666666500888888888888000000003111333000
+00010000000000000aaaaaaaaaaaaaa00aaaaaaaaaaaaaa000888888888888000bb3bbbb771b3bb06d6666666666666500888888888888000000000111130010
+00000000000000000aaaaaaaaaaaaaa00aaaaaaaaaaaaaa000888888888888000bbbbbbb71bbbbb0666d6666666d666500888888888888000000000111111111
+000011000100000007aaaaaaaaaaaa7007aaaaaaaaaaaa7000e8888888888e000bb3bbbb1bbb3bb0666766666667666500e8888888888e000000000001111011
+1001100011100000097777777777779009777777777777900027eeeeeeeee2000bbbbbbbbbbbbbb066666666666666650027eeeeeeeee2000000010100111100
+011110000110000004999999999999400499999999999940000222222222200006bbbbbbbbbbbb60666666666666666500022222222220000000111110001001
+00100100010000000299999999999920029999999999992000000000000000000576666666666650777777777777777500000000100000000011110100000000
+01000010110003100022222222222200002222222222220000000000000000000055555555555500055555555555555000000000000000000001010100000000
+11100000010033000000000000000000000001111000000100000001110000000000000000000000100000001000000000000100000000010000101110000000
+31110000003330010000000000000000000001111000000100000000110000000000000000000011110000000000000000000000000000001000110100003330
+11100000033300011001000000000000000011100000001110000001000000000000000000000110100000001000000000000100000000010000001001000303
+31010000003000000011100000000000100101000000000110000111100000000000000000000100000000001000000300000100000000000000011101101000
+31000000000000000001000000010000000000110000101111001101000000000000000000000110000000000000101000001111031001000000001000011103
+31100000000001103000000011110111101101011000010110001110000000000000000000000000000000000000000100000111111110111011000010011133
+01000000000000101000001111111111001111110000310000000110000000000000000000000100000000000000003300010001001100011111100111001133
+10000000000011000000001011111111101111110003000010001100000000000000110000001110000001100000030110111000000010111111110011100033
+00000300000111100000000000011111001111111330000000011100001000011100000000000100000003100000000010110000001103111111111111100011
+00000001001111000000000000111100011111113310000000011000011100001000110000000000000031110000000001111000000000101111111131000111
+03003311111110000000010000010010001131100111003000111000001000000000011310000000000003101000000010110000000001000111331330000011
+30003031301000001011110000110103011111100010033000010000000001000000111130000000000000311100111001000000000000001111133331000000
+00003330000000010111111001100000001131000011330000110001000010000000011300000000000000111100111100100010000011011311333333111000
+
 __map__
 0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00040501010101000004050102050300000402020202090000010201030303000001020202020200000402030001020000040100000203000004010201020100000405020505050000040c0005050500000800020103010000040002000909000004010109090100000401000103020000080109010101000004010201030200
