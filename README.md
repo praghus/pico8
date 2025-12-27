@@ -1,4 +1,4 @@
-# My Pico-8 Carts Repository
+# My PICO-8 Carts Repository
 
 This repository contains PICO-8 cartridges and related assets. It is organized to keep carts (`*.p8`) together with backups, exported images, and tools useful for development.
 
