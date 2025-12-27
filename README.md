@@ -1,4 +1,5 @@
-# My PICO-8 Carts Repository
+# <img width="32" height="32" alt="52351439-0d808e80-2a2b-11e9-8963-3d2af5080ea3" src="https://github.com/user-attachments/assets/c72f4cef-ae20-4b10-a0d1-f58efe538518" /> My PICO-8 Carts Repository
+
 
 This repository contains PICO-8 cartridges and related assets. It is organized to keep carts (`*.p8`) together with backups, exported images, and tools useful for development.
 
