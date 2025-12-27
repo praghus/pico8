@@ -242,7 +242,6 @@ end
 -->8
 -- UPDATE FUNCTIONS
 -------------------------------------------------------------------------------
-
 function update_level_transition()
     -- reset camera during transition
     cam_x, cam_y = 0, 0
@@ -660,7 +659,6 @@ end
 -->8
 -- PARTICLE SYSTEM
 -------------------------------------------------------------------------------
-
 function create_debris_particles(px, py, col1, col2)
     col2 = col2 or col1
     create_particle(px, py, col1, -2, -2, 1.5, false, true, true)

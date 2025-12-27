@@ -1,31 +1,21 @@
-# Konfiguracja Git dla repo z cartami Pico-8
 
-Krótko: dodane pliki ` .gitignore` i ` .gitattributes` aby śledzić carty (`.p8`) poprawnie i ignorować lokalne kopie zapasowe oraz logi.
+# My Pico-8 Carts Repository
 
-Szybki start (w terminalu w katalogu projektu):
+This repository contains PICO-8 cartridges and related assets. It is organized to keep carts (`*.p8`) together with backups, exported images, and tools useful for development.
+
+Repository layout:
+
+- `carts/` — main PICO-8 cartridges (`*.p8`)
+- `backup/` — backups and exported carts
+- `cdata/`, `cstore/`, `plates/` — project-specific data and assets
+- `tools/` — utilities and scripts for building/exporting carts
+
+Quick start
+
+1. Install PICO-8 (download from https://www.lexaloffle.com/pico-8.php).
+2. Open a cart in the PICO-8 application: File → Open → select `carts/your_cart.p8`.
+3. Or run from command line (if `pico8` CLI is available):
 
 ```powershell
-git init
-git add .
-git commit -m "Initial commit: add git config for Pico-8 carts"
-git branch -M main
-git remote add origin <url-do-repo>
-git push -u origin main
+pico8 -run carts\your_cart.p8
 ```
-
-Opcjonalnie: Git LFS dla obrazów (zalecane jeśli masz duże PNG):
-
-```powershell
-git lfs install
-git lfs track "*.png"
-git lfs track "*.p8.png"
-git add .gitattributes
-git add --all
-git commit -m "Add Git LFS tracking for images"
-git push
-```
-
-Uwagi:
-- Katalog `backup/` i inne lokalne dane są ignorowane przez ` .gitignore`.
-- ` .gitattributes` ustawia `*.p8` jako tekst z LF, co ułatwia porównania i mergety.
-- Jeśli chcesz, mogę dodać przykładowy `pre-commit` hook (np. walidacja składni `.p8`).
