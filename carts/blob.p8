@@ -17,7 +17,7 @@ immortal = false -- debug mode to prevent falling off
 
 -- LEVEL STATE ---------------------------------------------------------------
 current_level = 1
-next_level = 1
+next_level = 2
 levels = {}
 level_time = 0 -- time counter for current level in seconds
 level_cleared = false
@@ -25,19 +25,17 @@ level_cleared_timer = 0
 level_transition = false
 level_transition_direction = 0 -- -1 for left, 1 for right
 level_transition_new_anims = {}
-level_transition_phase = "slide"
+level_transition_phase = "slide" -- "slide", "fall"
 level_transition_offset = 0
 level_transition_started = false
 
 -- MAP STATE -----------------------------------------------------------------
-map_width = 8
-map_height = 8
+start_x, start_y = 0, 0
+map_width, map_height = 8, 8
 map_tiles = map_width * map_height
 tile_size = 16
 current_map = {}
 old_map = {}
-start_x = 0
-start_y = 0
 tiles_left = 0
 total_tiles = 0
 
@@ -833,7 +831,7 @@ function setup_tile_respawn_animations(old_map)
             local ty = flr(idx0 / map_width)
 
             -- add to respawn animation list
-            local delay = (tx + ty) * 0.06 -- faster sequential animation
+            local delay = (tx + ty) * 0.06
             add(
                 tile_respawn_anims, {
                     x = tx,
@@ -849,18 +847,14 @@ function setup_tile_respawn_animations(old_map)
     end
 end
 
--- update tile respawn animations
 function update_tile_respawn_animations()
     if not tile_respawn_active then return end
 
     local all_finished = true
 
     for anim in all(tile_respawn_anims) do
-        -- start animation when timer becomes positive (staggered start)
         if anim.timer >= 0 then
             anim.current_y = lerp(anim.target_y, anim.current_y, 0.5)
-
-            -- check if animation is close to finished
             if abs(anim.current_y - anim.target_y) > 0.5 then
                 all_finished = false
             end
@@ -868,10 +862,9 @@ function update_tile_respawn_animations()
             all_finished = false
         end
 
-        anim.timer += 1 / 30 -- increment based on frame rate
+        anim.timer += 1 / 30
     end
 
-    -- if all animations finished, clear the system
     if all_finished then
         tile_respawn_active = false
         tile_respawn_anims = {}
@@ -963,21 +956,18 @@ function update_bounce(p)
                 local tile = get_tile(p.grid_x, p.grid_y)
                 if tile == 0 then
                     if not immortal then
-                        -- empty tile - start falling (no bounce sound!)
+                        -- empty tile - start falling
                         p.falling = true
                         p.fall_timer = 0
                     else
                         sfx(11)
                     end
                 else
-                    -- tile exists - check if it's a teleport tile (new ids 7..14)
+                    -- teleport tile - hit it and start teleport animation
                     if tile >= 7 and tile <= 14 then
-                        -- teleport tile - hit it and start teleport animation
                         sfx(11)
                         hit_tile(p.grid_x, p.grid_y)
-                        -- calculate teleport destination
                         local nx2, ny2 = p.grid_x, p.grid_y
-                        -- new directional teleport ids (7..14), clockwise from up=7
                         if tile == 10 then
                             nx2 = p.grid_x - 2 -- left (2 tiles)
                         elseif tile == 8 then
@@ -999,15 +989,16 @@ function update_bounce(p)
                             nx2 = p.grid_x + 1 -- down-right (diag)
                             ny2 = p.grid_y + 1
                         end
-                        -- start animated teleport movement
+
                         p.old_x = p.grid_x
                         p.old_y = p.grid_y
                         p.grid_x = nx2
                         p.grid_y = ny2
                         p.moving = true
                         p.move_timer = 0
-                        -- create trail for teleport
+
                         create_trail(p.old_x, p.old_y, nx2, ny2)
+
                         -- block until next cycle and reset peak
                         p.can_hit = false
                         p.reached_peak = false
@@ -1247,10 +1238,7 @@ end
 
 function draw_gui()
     rectfill(0, 0, 128, 9, 0)
-    -- -- rectfill(0, 119, 128, 128, 0)
-    -- -- line(0, 8, 128, 8, 1)
-    -- rect(0, 9, 127, 127, 1)
-    -- rect(1, 10, 126, 126, 0)
+    spr(128, 96, 1)
 
     local display_level = (level_transition and next_level) or current_level
     local level_text = "level " .. display_level
@@ -1261,8 +1249,6 @@ function draw_gui()
     local time_width = #time_text * 4
     print(time_text, 128 - time_width - 2, 3, 1)
     print(time_text, 128 - time_width - 2, 2, 6)
-
-    spr(128, 96, 1)
 end
 
 function draw_title_screen()
@@ -1437,10 +1423,9 @@ function draw_background()
 end
 
 function draw_messages()
-    local pulse = 0.5 + 0.5 * sin(t * 4)
-    local color = 7 + flr(pulse * 3)
-
     -- local pulse = sin(t * 2) * 0.5 + 0.5
+    local pulse = sin(t * 4) * 0.5 + 0.5
+    local color = 7 + flr(pulse * 3)
     -- local color = flr(pulse * 6) + 8
 
     if level_cleared and level_cleared_timer < 5 then
@@ -1479,8 +1464,8 @@ function draw_flash_animation()
 
     local y_center = record_anim_y_center or 64
     local y_pos = y_center - record_anim_height / 2
-
     local rect_color = 7
+
     if record_anim_stage == 3 then
         rect_color = 0
     end
@@ -1494,11 +1479,10 @@ function draw_flash_animation()
         local text_y = y_center - 3 -- center text vertically
 
         if record_anim_height >= 8 and record_anim_width >= text_width then
-            -- rainbow color cycling effect
-            local color_cycle = sin(t * 8) * 3 + 3 -- cycles through colors 0-6
-            local text_color = flr(color_cycle) + 8 -- colors 8-14 (bright colors)
-            if text_color > 14 then text_color = 8 + (text_color - 15) end
-            print_centered(text, text_y, text_color)
+            local pulse = sin(t * 8) * 3 + 3 -- cycles through colors 0-6
+            local color = flr(pulse) + 8 -- colors 8-14 (bright colors)
+            if color > 14 then color = 8 + (color - 15) end
+            print_centered(text, text_y, color)
         end
     end
 end
@@ -1542,7 +1526,6 @@ function trigger_shake()
     shake_intensity = 2
 end
 
--- build levels from native map using mget
 function load_levels_from_native_map()
     -- number of blocks that fit horizontally and vertically
     local blocks_x = 128 / map_width
