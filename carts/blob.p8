@@ -50,6 +50,10 @@ palette = {
     [3] = { 0, 1, 3, 1, 3, 11 },
     [4] = { 0, 1, 2, 1, 2, 14 }
 }
+debris_color_map = {
+    [7] = { 11, 3 }, [8] = { 11, 3 }, [9] = { 11, 3 }, [10] = { 11, 3 },
+    [11] = { 12, 1 }, [12] = { 12, 1 }, [13] = { 12, 1 }, [14] = { 12, 1 }
+}
 
 -- CAMERA & EFFECTS ----------------------------------------------------------
 cam_x = 0
@@ -77,20 +81,20 @@ record_anim_x = 0
 record_anim_height = 2
 tile_respawn_anims = {}
 tile_respawn_active = false
-
--- BEST TIMES -----------------------------------------------------------------
+tile_flashes = {}
+tile_flash_duration = 0.06
+-- BEST TIMES -------------------------------------------------------------------
 best_times = {} -- stores best time for each level
--------------------------------------------------------------------------------
+---------------------------------------------------------------------------------
 
 function _init()
     menuitem(1, "music: " .. (music_on and "on" or "off"), toggle_music)
     menuitem(2, "back to title", return_to_title)
 
-    set_default_palette()
     cls(0)
 
     if firstinit then
-        current_level = 1
+        current_level = 11
         game_state = "title"
         if music_on then
             music(0)
@@ -168,8 +172,8 @@ end
 -------------------------------------------------------------------------------
 function start_game()
     game_state = "playing"
-    _init()
     set_level(current_level, true, true)
+    _init()
 end
 
 function reset_all_best_times()
@@ -220,6 +224,15 @@ function handle_level_completion()
 end
 
 function handle_player_input()
+    if not player then return end
+
+    -- block input while spawn animation / flash is active
+    if player.spawning or (player.spawn_flash and player.spawn_flash > 0) then
+        player.input_buffered = false
+        player.buffered_dir = 0
+        return
+    end
+
     if btn(0) then
         player.buffered_dir = 0
         player.input_buffered = true
@@ -307,6 +320,15 @@ function update_level_transition()
 end
 
 function update_common_effects()
+    if player then update_spawn(player) end
+    if player and player.pending_spawn and is_player_visible(player) then
+        player.pending_spawn = false
+        player.spawning = true
+        player.spawn_timer = 0
+        player.spawn_flash = 0
+        player.input_buffered = false
+        player.buffered_dir = 0
+    end
     if shake_timer > 0 then shake_timer -= 1 end
     if progress_flash > 0 then
         progress_flash -= 0.32
@@ -318,6 +340,7 @@ function update_common_effects()
     end
     update_particles()
     update_flash_animation()
+    update_tile_flashes()
     update_tile_respawn_animations()
 end
 
@@ -373,6 +396,8 @@ function update_title_state()
 end
 
 function update_player_state()
+    update_spawn(player)
+
     if player.falling then
         update_player_falling()
     elseif player.moving then
@@ -492,6 +517,228 @@ function update_player_moving()
                 player.reached_peak = false
             end
         end
+    end
+end
+
+function update_tile_respawn_animations()
+    if not tile_respawn_active then return end
+
+    local all_finished = true
+
+    for anim in all(tile_respawn_anims) do
+        if anim.timer >= 0 then
+            anim.current_y = lerp(anim.target_y, anim.current_y, 0.5)
+            if abs(anim.current_y - anim.target_y) > 0.5 then
+                all_finished = false
+            end
+        else
+            all_finished = false
+        end
+
+        anim.timer += 1 / 30
+    end
+
+    if all_finished then
+        tile_respawn_active = false
+        tile_respawn_anims = {}
+    end
+end
+
+function update_bounce(p)
+    if not p then return end
+    -- if ball is falling, animate fall (zoom only)
+    if p.falling then
+        local t = p.fall_timer
+        local size = 8 * (1 - t) -- from 8 to 0
+        p.w = max(1, size)
+        p.offset_y = t * 8
+        p.prev_bounce = 0
+        p.can_move = false
+        return
+    end
+
+    if not p.bounce_timer then
+        p.bounce_timer = 0
+    end
+
+    -- stop bounce animation increment if falling
+    if not p.falling then
+        p.bounce_timer += 0.033
+        if p.bounce_timer >= 1 then
+            p.bounce_timer = 0
+        end
+    end
+
+    local t = p.bounce_timer
+    local bounce = sin(t * 0.5)
+
+    -- detect jump peak for input (bounce near maximum)
+    if not p.moving and not p.falling then
+        -- jump peak: t from 0.2 to 0.3 (peak of sinusoid)
+        if t > 0.2 and t < 0.3 and not p.can_move then
+            p.can_move = true
+
+            -- execute move if input is buffered
+            if p.input_buffered then
+                local nx, ny = p.grid_x, p.grid_y
+                if p.buffered_dir == 0 then
+                    nx = p.grid_x - 1
+                elseif p.buffered_dir == 1 then
+                    nx = p.grid_x + 1
+                elseif p.buffered_dir == 2 then
+                    ny = p.grid_y - 1
+                elseif p.buffered_dir == 3 then
+                    ny = p.grid_y + 1
+                end
+                -- start animated movement
+                p.old_x = p.grid_x
+                p.old_y = p.grid_y
+                p.grid_x = nx
+                p.grid_y = ny
+                p.moving = true
+                p.move_timer = 0
+                p.can_move = false
+
+                -- create trail from start to end position
+                -- create_trail(p.old_x, p.old_y, nx, ny)
+            end
+        end
+
+        -- reset can_move when t returns to 0 (prepare for next jump)
+        if t < 0.1 or t > 0.9 then
+            p.can_move = false
+        end
+    end
+
+    p.prev_bounce = bounce
+
+    -- ball size: small (4) to large (16) and back
+    local min_size = 4
+    local max_size = 16
+    local zoom_factor = bounce * bounce
+    p.w = min_size + (max_size - min_size) * zoom_factor
+
+    -- detect moment of touching tile (smallest size) and hit tile
+    if not p.moving and not p.falling then
+        local prev_size = p.prev_size or min_size
+        -- ball reached smallest size (tile touch)
+        if prev_size > min_size and p.w <= min_size then
+            if p.can_hit then
+                local tile = get_tile(p.grid_x, p.grid_y)
+                if tile == 0 then
+                    if not immortal then
+                        -- empty tile - start falling
+                        p.falling = true
+                        p.fall_timer = 0
+                    else
+                        sfx(11)
+                    end
+                else
+                    -- teleport tile - hit it and start teleport animation
+                    if tile >= 7 and tile <= 14 then
+                        sfx(11)
+                        hit_tile(p.grid_x, p.grid_y)
+                        local nx2, ny2 = p.grid_x, p.grid_y
+                        if tile == 10 then
+                            nx2 = p.grid_x - 2 -- left (2 tiles)
+                        elseif tile == 8 then
+                            nx2 = p.grid_x + 2 -- right (2 tiles)
+                        elseif tile == 9 then
+                            ny2 = p.grid_y + 2 -- down (2 tiles)
+                        elseif tile == 7 then
+                            ny2 = p.grid_y - 2 -- up (2 tiles)
+                        elseif tile == 14 then
+                            nx2 = p.grid_x - 1 -- up-left (diag)
+                            ny2 = p.grid_y - 1
+                        elseif tile == 11 then
+                            nx2 = p.grid_x + 1 -- up-right (diag)
+                            ny2 = p.grid_y - 1
+                        elseif tile == 13 then
+                            nx2 = p.grid_x - 1 -- down-left (diag)
+                            ny2 = p.grid_y + 1
+                        elseif tile == 12 then
+                            nx2 = p.grid_x + 1 -- down-right (diag)
+                            ny2 = p.grid_y + 1
+                        end
+
+                        p.old_x = p.grid_x
+                        p.old_y = p.grid_y
+                        p.grid_x = nx2
+                        p.grid_y = ny2
+                        p.moving = true
+                        p.move_timer = 0
+
+                        create_trail(p.old_x, p.old_y, nx2, ny2)
+
+                        -- block until next cycle and reset peak
+                        p.can_hit = false
+                        p.reached_peak = false
+                    else
+                        -- normal tile - hit it with bounce sound
+                        sfx(11)
+                        hit_tile(p.grid_x, p.grid_y)
+                        -- block until next cycle and reset peak
+                        p.can_hit = false
+                        p.reached_peak = false
+                    end
+                end
+            else
+                -- can't hit but still bouncing - play sound
+                sfx(11)
+            end
+        end
+        -- track if ball reached peak (large size > 14)
+        if p.w > 14 and not p.can_hit and not p.reached_peak then
+            p.reached_peak = true
+        end
+        -- allow hitting only when ball passed peak and returns down
+        if p.reached_peak and p.w < 6 then
+            p.can_hit = true
+            p.reached_peak = false
+        end
+
+        p.prev_size = p.w
+    end
+    -- Y axis movement: ball always above tile
+    -- in lower phase -2, in upper phase -10 (8px difference)
+    p.offset_y = -1.5 - bounce * 5
+end
+
+function update_tile_flashes()
+    if #tile_flashes == 0 then return end
+    local to_finalize = {}
+    for f in all(tile_flashes) do
+        f.timer += 1 / 30
+        if f.timer >= tile_flash_duration then
+            add(to_finalize, f)
+        end
+    end
+    for f in all(to_finalize) do
+        finalize_tile_removal(f)
+        del(tile_flashes, f)
+    end
+end
+
+function update_spawn(p)
+    if not p or (not p.spawning and not (p.spawn_flash and p.spawn_flash > 0)) then return end
+
+    if p.spawning then
+        p.spawn_timer = (p.spawn_timer or 0) + 1 / 30
+    end
+
+    local dur = p.spawn_duration or 0.6
+    local prog = (p.spawn_timer or 0) / dur
+    local beam_visible = p.beam_visible or ((p.beam_frac or 0.3) * dur)
+
+    if p.spawning and prog >= 1 then
+        p.spawning = false
+        p.spawn_timer = dur
+        p.spawn_flash = p.spawn_flash or 0.4
+    end
+
+    if p.spawn_flash and p.spawn_flash > 0 then
+        p.spawn_flash -= 1 / 30
+        if p.spawn_flash < 0 then p.spawn_flash = 0 end
     end
 end
 
@@ -742,9 +989,7 @@ function check_level_completion()
         progress_flash = 1
     end
     if tiles_left <= 0 then
-        -- level cleared - check for new best time
         check_best_time()
-        -- trigger level cleared state
         level_cleared = true
         level_cleared_timer = 0
         particles = {}
@@ -847,190 +1092,23 @@ function setup_tile_respawn_animations(old_map)
     end
 end
 
-function update_tile_respawn_animations()
-    if not tile_respawn_active then return end
-
-    local all_finished = true
-
-    for anim in all(tile_respawn_anims) do
-        if anim.timer >= 0 then
-            anim.current_y = lerp(anim.target_y, anim.current_y, 0.5)
-            if abs(anim.current_y - anim.target_y) > 0.5 then
-                all_finished = false
-            end
-        else
-            all_finished = false
+function trigger_tile_flash(x, y, remove_after)
+    -- avoid duplicates
+    for f in all(tile_flashes) do
+        if f.x == x and f.y == y then
+            return
         end
-
-        anim.timer += 1 / 30
     end
-
-    if all_finished then
-        tile_respawn_active = false
-        tile_respawn_anims = {}
-    end
+    if remove_after == nil then remove_after = true end
+    local entry = { x = x, y = y, timer = 0, remove_after = remove_after, tile = get_tile(x, y) }
+    add(tile_flashes, entry)
 end
 
-function update_bounce(p)
-    -- save previous bounce value for bounce detection
-    local prev_bounce = p.prev_bounce or 0
-
-    -- if ball is falling, animate fall (zoom only)
-    if p.falling then
-        local t = p.fall_timer
-        local size = 8 * (1 - t) -- from 8 to 0
-        p.w = max(1, size)
-        p.offset_y = t * 8
-        p.prev_bounce = 0
-        p.can_move = false
-        return
+function get_flash_at(x, y)
+    for f in all(tile_flashes) do
+        if f.x == x and f.y == y then return f end
     end
-
-    if not p.bounce_timer then
-        p.bounce_timer = 0
-    end
-
-    -- stop bounce animation increment if falling
-    if not p.falling then
-        p.bounce_timer += 0.033
-        if p.bounce_timer >= 1 then
-            p.bounce_timer = 0
-        end
-    end
-
-    local t = p.bounce_timer
-    local bounce = sin(t * 0.5)
-
-    -- detect jump peak for input (bounce near maximum)
-    if not p.moving and not p.falling then
-        -- jump peak: t from 0.2 to 0.3 (peak of sinusoid)
-        if t > 0.2 and t < 0.3 and not p.can_move then
-            p.can_move = true
-
-            -- execute move if input is buffered
-            if p.input_buffered then
-                local nx, ny = p.grid_x, p.grid_y
-                if p.buffered_dir == 0 then
-                    nx = p.grid_x - 1
-                elseif p.buffered_dir == 1 then
-                    nx = p.grid_x + 1
-                elseif p.buffered_dir == 2 then
-                    ny = p.grid_y - 1
-                elseif p.buffered_dir == 3 then
-                    ny = p.grid_y + 1
-                end
-                -- start animated movement
-                p.old_x = p.grid_x
-                p.old_y = p.grid_y
-                p.grid_x = nx
-                p.grid_y = ny
-                p.moving = true
-                p.move_timer = 0
-                p.can_move = false
-
-                -- create trail from start to end position
-                -- create_trail(p.old_x, p.old_y, nx, ny)
-            end
-        end
-
-        -- reset can_move when t returns to 0 (prepare for next jump)
-        if t < 0.1 or t > 0.9 then
-            p.can_move = false
-        end
-    end
-
-    p.prev_bounce = bounce
-
-    -- ball size: small (4) to large (16) and back
-    local min_size = 4
-    local max_size = 16
-    local zoom_factor = bounce * bounce
-    p.w = min_size + (max_size - min_size) * zoom_factor
-
-    -- detect moment of touching tile (smallest size) and hit tile
-    if not p.moving and not p.falling then
-        local prev_size = p.prev_size or min_size
-        -- ball reached smallest size (tile touch)
-        if prev_size > min_size and p.w <= min_size then
-            if p.can_hit then
-                local tile = get_tile(p.grid_x, p.grid_y)
-                if tile == 0 then
-                    if not immortal then
-                        -- empty tile - start falling
-                        p.falling = true
-                        p.fall_timer = 0
-                    else
-                        sfx(11)
-                    end
-                else
-                    -- teleport tile - hit it and start teleport animation
-                    if tile >= 7 and tile <= 14 then
-                        sfx(11)
-                        hit_tile(p.grid_x, p.grid_y)
-                        local nx2, ny2 = p.grid_x, p.grid_y
-                        if tile == 10 then
-                            nx2 = p.grid_x - 2 -- left (2 tiles)
-                        elseif tile == 8 then
-                            nx2 = p.grid_x + 2 -- right (2 tiles)
-                        elseif tile == 9 then
-                            ny2 = p.grid_y + 2 -- down (2 tiles)
-                        elseif tile == 7 then
-                            ny2 = p.grid_y - 2 -- up (2 tiles)
-                        elseif tile == 14 then
-                            nx2 = p.grid_x - 1 -- up-left (diag)
-                            ny2 = p.grid_y - 1
-                        elseif tile == 11 then
-                            nx2 = p.grid_x + 1 -- up-right (diag)
-                            ny2 = p.grid_y - 1
-                        elseif tile == 13 then
-                            nx2 = p.grid_x - 1 -- down-left (diag)
-                            ny2 = p.grid_y + 1
-                        elseif tile == 12 then
-                            nx2 = p.grid_x + 1 -- down-right (diag)
-                            ny2 = p.grid_y + 1
-                        end
-
-                        p.old_x = p.grid_x
-                        p.old_y = p.grid_y
-                        p.grid_x = nx2
-                        p.grid_y = ny2
-                        p.moving = true
-                        p.move_timer = 0
-
-                        create_trail(p.old_x, p.old_y, nx2, ny2)
-
-                        -- block until next cycle and reset peak
-                        p.can_hit = false
-                        p.reached_peak = false
-                    else
-                        -- normal tile - hit it with bounce sound
-                        sfx(11)
-                        hit_tile(p.grid_x, p.grid_y)
-                        -- block until next cycle and reset peak
-                        p.can_hit = false
-                        p.reached_peak = false
-                    end
-                end
-            else
-                -- can't hit but still bouncing - play sound
-                sfx(11)
-            end
-        end
-        -- track if ball reached peak (large size > 14)
-        if p.w > 14 and not p.can_hit and not p.reached_peak then
-            p.reached_peak = true
-        end
-        -- allow hitting only when ball passed peak and returns down
-        if p.reached_peak and p.w < 6 then
-            p.can_hit = true
-            p.reached_peak = false
-        end
-
-        p.prev_size = p.w
-    end
-    -- Y axis movement: ball always above tile
-    -- in lower phase -2, in upper phase -10 (8px difference)
-    p.offset_y = -1.5 - bounce * 5
+    return nil
 end
 
 function handle_teleport(x, y, particle_col1, particle_col2)
@@ -1077,6 +1155,7 @@ function hit_tile(x, y)
     if tile == 1 or tile == 2 or tile == 3 then
         trigger_shake()
         local px, py = tile_to_px(x, y)
+
         for i = 1, 8 do
             local col = rnd(1) > 0.5 and 10 or 9
             create_simple_particle(px, py, col)
@@ -1085,13 +1164,11 @@ function hit_tile(x, y)
         sfx(12)
 
         local new_tile = tile - 1
-        if new_tile <= 0 then
-            set_tile(x, y, 0)
-            local world_px = px - cam_x
-            local world_py = py - cam_y
-            create_debris_particles(world_px, world_py, 8)
-            check_level_completion()
-        else
+        local will_remove = new_tile <= 0
+
+        trigger_tile_flash(x, y, will_remove)
+
+        if not will_remove then
             set_tile(x, y, new_tile)
             sfx(11)
         end
@@ -1120,6 +1197,24 @@ function get_teleport_anim_sprite(tile)
     return 0
 end
 
+function finalize_tile_removal(f)
+    if not f or not f.remove_after then return end
+
+    local x, y = f.x, f.y
+    local px, py = tile_to_px(x, y)
+    set_tile(x, y, 0)
+    local world_px = px - cam_x
+    local world_py = py - cam_y
+
+    local tileid = f.tile or 0
+    local cols = debris_color_map[tileid]
+    local col1 = (cols and cols[1]) or 8
+    local col2 = (cols and cols[2]) or col1
+
+    create_debris_particles(world_px, world_py, col1, col2)
+    check_level_completion()
+end
+
 -->8
 -- DRAWS
 -------------------------------------------------------------------------------
@@ -1130,11 +1225,56 @@ function draw_player(p, camx, camy)
     local px, py = compute_ball_screen_pos(p)
     local s = ball_render_size(p)
     local ball_y = py + (p.offset_y or 0) - s / 2
+    local spawning_active = p and (p.spawning or (p.spawn_flash and p.spawn_flash > 0))
+    local spawn_prog = 1
 
     draw_player_shadow(p, 7, 11)
 
-    if s > 0.5 then
-        draw_ball(px, ball_y, s)
+    if spawning_active then
+        local spawn_timer = p.spawn_timer or 0
+        local dur = p.spawn_duration or 0.6
+        spawn_prog = mid(0, spawn_timer / dur, 1)
+
+        local beam_visible = p.beam_visible or ((p.beam_frac or 0.3) * dur)
+        local show_beam = spawn_timer < beam_visible or (p.spawn_flash and p.spawn_flash > 0)
+
+        -- radial light glow while appearing (draw under beam/flash)
+        local light_r_max = 40
+        local light_r = light_r_max * (1 - spawn_prog)
+        if light_r > 1 then
+            local lr1 = flr(light_r)
+            circfill(px, py, lr1, 14)
+            circfill(px, py, flr(lr1 * 0.6), 7)
+            circfill(px, py, flr(lr1 * 0.3), 7)
+        end
+
+        if show_beam then
+            rectfill(px - 4, 0, px + 4, py, 14)
+            rectfill(px - 2, 0, px + 2, py, 7)
+        end
+
+        circfill(px, py - 1, 2 + spawn_prog * 2, 7)
+
+        if p.spawn_flash and p.spawn_flash > 0 then
+            local flash_dur = p.spawn_flash_dur or 0.12
+            local fprog = p.spawn_flash / flash_dur
+            if fprog > 0 then
+                local flash_r = 28 * fprog
+                local inner_r = max(1, flr(flash_r * 0.55))
+                circfill(px, py, inner_r, 7)
+                circ(px, py, flr(flash_r), 15)
+                for i = 1, 4 do
+                    local sx = px + rnd(flash_r) - flash_r / 2
+                    local sy = py + rnd(flash_r) - flash_r / 2
+                    circfill(sx, sy, rnd(1.2), 14)
+                end
+            end
+        end
+    end
+
+    local s_draw = s * spawn_prog
+    if s_draw > 0.5 then
+        draw_ball(px, ball_y, s_draw)
     end
 end
 
@@ -1173,9 +1313,36 @@ function draw_tile_with_anim(tile, x, y)
         local bg_tile = (draw_tile >= 11 and draw_tile <= 14) and teleport2_bg_sprite or teleport1_bg_sprite
         draw_tile_sprite(bg_tile, x, y)
         local icon_sprite = get_teleport_anim_sprite(draw_tile)
-        spr(icon_sprite, x + 4, y + 4)
+        spr(icon_sprite, x + 4, y + 3)
     else
         draw_tile_sprite(map_tile_to_sprite(draw_tile), x, y)
+    end
+
+    -- draw flash overlay if applicable
+    local tx = flr(x / tile_size)
+    local ay = 4
+    local ty = flr((y - ay) / tile_size)
+    local f = get_flash_at(tx, ty)
+    if f then
+        local base_sprite = map_tile_to_sprite(draw_tile)
+        local src_x = (base_sprite % 16) * 8
+        local src_y = flr(base_sprite / 16) * 8
+
+        local ssrc_x = src_x
+        local ssrc_y = src_y
+
+        for c = 1, 15 do
+            pal(c, 7)
+        end
+
+        sspr(ssrc_x, ssrc_y, tile_size, tile_size, x, y, tile_size, tile_size)
+
+        -- if draw_tile >= 7 and draw_tile <= 14 then
+        --     local icon_sprite = get_teleport_anim_sprite(draw_tile)
+        --     sspr((icon_sprite % 16) * 8, flr(icon_sprite / 16) * 8, 8, 8, x + 4, y + 4, 8, 8)
+        -- end
+
+        pal()
     end
 end
 
@@ -1312,7 +1479,7 @@ function draw_title_screen()
             spr(184 + i, title_x + i * 8, cur_y + 24)
         end
 
-        set_default_palette()
+        pal()
 
         if title_bounce_done then
             local delay, flash_dur = 0.6, 0.8
@@ -1401,7 +1568,7 @@ function draw_leaderboard()
     end
 
     print_centered("\x8e+\x97 reset records", board_y + 8, 9, 1)
-    print_centered("press \x83 to close", board_y + board_height - 12, 6, 1)
+    print_centered("press \x97 to close", board_y + board_height - 12, 6, 1)
 end
 
 function draw_background()
@@ -1502,7 +1669,6 @@ function clamp(a, mi, ma) return min(max(a, mi), ma) end
 function map_tile_to_sprite(id) return tile_sprite_map[id] or id end
 function tile_to_px(x, y) return 0 + x * tile_size + 8, y * tile_size + 8 end
 function ball_render_size(p) return (p and (p.w or 0) or 0) / 1.8 end
-function set_default_palette() pal() end
 
 function print_centered(text, y, col, shadow_col)
     local width = 0
@@ -1675,8 +1841,18 @@ function create_player(x, y)
         move_timer = 0, -- timer for movement animation (0 to 1)
         w = 4, -- ball size (will animate 4-16)
         offset_y = 0, -- Y offset for animation (0 down, -4 up)
-        bounce_timer = 0 -- timer for bounce animation
+        bounce_timer = 0, -- timer for bounce animation
+        fall_timer = 0
     }
+    local needs_delay = level_transition or is_showing_messages()
+
+    p.spawn_timer = 0
+    p.spawn_duration = 0.6
+    p.beam_frac = 0.3
+    p.beam_visible = 0.6
+    p.spawning = not needs_delay
+    p.pending_spawn = needs_delay
+
     return p
 end
 
@@ -1733,21 +1909,21 @@ __gfx__
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 0000000000000000000000000000000000aaaaaaaaaaaa000000000000000000000000000000000006666666666666000ddddddddddddd0006666666666666d0
-000000000000000000999999999999000aaaaaaaaaaaaaa0000000000000000000000000000000006555555555555560ddddddddddddddd1666666666666666d
-000888888888800009999999999999900aa444aaaaaaaaa000cccccccccccc0000bbbbbbbbbbbb006d66666666666d60ddddddddddddddd1666666666666666d
-0088888888888800099aa999999999900aaa99aaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb06d65666666656d60dddd5ddddd5dddd1666d66666666d66d
-0088ff88888888000999a999999999900aaaa9aaaaaaaaa00cc1111111111cc00bb1111111111bb06d67666666676d60ddd516ddd516ddd1666766666666766d
-00888f8888888800099a9999999999900aa999aaaaaaaaa00cc1dddddddd1cc00bb1333333331bb06d66666666666d60dddd6ddddd6dddd1666666666666666d
+000000000000000000999999999999000aaaaaaaaaaaaaa000cccccccccccc0000bbbbbbbbbbbb006555555555555560ddddddddddddddd1666666666666666d
+000888888888800009999999999999900aa444aaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb06d66666666666d60ddddddddddddddd1666666666666666d
+0088888888888800099aa999999999900aaa99aaaaaaaaa00cc1111111111cc00bb1111111111bb06d65666666656d60dddd5ddddd5dddd1666d66666666d66d
+0088ff88888888000999a999999999900aaaa9aaaaaaaaa00cc1dddddddd1cc00bb1333333331bb06d67666666676d60ddd516ddd516ddd1666766666666766d
+00888f8888888800099a9999999999900aa999aaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666d60dddd6ddddd6dddd1666666666666666d
 00888f8888888800099aa999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666660ddddddddddddddd1666666666666666d
 008888888888880009999999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06d66666666666d60ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaa00cc1cccccccc1cc00bb1bbbbbbbb1bb06666666666666660ddddddddddddddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaa00cc5cccccccc5cc00bb3bbbbbbbb3bb06d66666666666660dddd5ddddd5dddd1666666666666666d
-008888888888880009999999999999900aaaaaaaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb0666d6666666d6660ddd516ddd516ddd1666666666666666d
-00e8888888888e00099999999999999007aaaaaaaaaaaa700cc5cccccccc5cc00bb3bbbbbbbb3bb06667666666676660dddd6ddddd6dddd1666d66666666d66d
-0027eeeeeeeee2000f999999999999f009777777777777900cccccccccccccc00bbbbbbbbbbbbbb06666666666666660ddddddddddddddd1666766666666766d
-0002222222222000047fffffffffff4004999999999999400dccccccccccccd006bbbbbbbbbbbb6066666666666666606ddddddddddddd61766666666666667d
-000000000000000000444444444444000299999999999920056ddddddddddd500576666666666650d7777777777777501666666666666610d7777777777777dd
-00000000000000000000000000000000002222222222220000555555555555000055555555555500055555555555550001111111111111000dddddddddddddd0
+008888888888880009999999999999900aaaaaaaaaaaaaa00cc5cccccccc5cc00bb3bbbbbbbb3bb06666666666666660ddddddddddddddd1666666666666666d
+008888888888880009999999999999900aaaaaaaaaaaaaa00cccccccccccccc00bbbbbbbbbbbbbb06d66666666666660dddd5ddddd5dddd1666666666666666d
+008888888888880009999999999999900aaaaaaaaaaaaaa00cc5cccccccc5cc00bb3bbbbbbbb3bb0666d6666666d6660ddd516ddd516ddd1666666666666666d
+00e8888888888e00099999999999999007aaaaaaaaaaaa700cccccccccccccc00bbbbbbbbbbbbbb06667666666676660dddd6ddddd6dddd1666d66666666d66d
+0027eeeeeeeee2000f999999999999f009777777777777900dccccccccccccd006bbbbbbbbbbbb606666666666666660ddddddddddddddd1666766666666766d
+0002222222222000047fffffffffff400499999999999940056ddddddddddd50057666666666665066666666666666606ddddddddddddd61766666666666667d
+00000000000000000044444444444400029999999999992000555555555555000055555555555500d7777777777777501666666666666610d7777777777777dd
+00000000000000000000000000000000002222222222220000000000000000000000000000000000055555555555550001111111111111000dddddddddddddd0
 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
 00000000000000000000000000000000000000000000000000070000000000000000000000000000000000000000000000000000000000000000000000000000
 07000000007000000007000000007000000700000070000000770000000070000000000000000000000000000000700000000000000000000000000000000000
