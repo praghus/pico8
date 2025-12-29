@@ -231,7 +231,6 @@ function Player:update_bounce()
     -- detect moment of touching tile (smallest size) and hit tile
     if not p.moving then
         local prev_size = p.prev_size or min_size
-        -- robust touch detection: previous size was larger than current and current is near minimum
         local touched = (prev_size > p.w) and (p.w <= (min_size + 0.5))
         if touched then
             if p.can_hit then
@@ -673,7 +672,7 @@ UIManager = {
     tile_respawn_anims = {},
     tile_respawn_active = false,
     tile_flashes = {},
-    tile_flash_duration = 0.06
+    tile_flash_duration = 0.12
 }
 
 function UIManager:reset()
@@ -773,7 +772,7 @@ function UIManager:draw_title_screen()
             self.title_drop_y = (self.title_drop_y or -40) + self.title_drop_vy
             if self.title_drop_y >= 0 then
                 self.title_drop_y = 0
-                self.title_drop_vy = -self.title_drop_vy * 0.45 -- bounce with damping
+                self.title_drop_vy = -self.title_drop_vy * 0.45
                 if abs(self.title_drop_vy) < 0.6 then
                     self.title_drop_vy = 0
                     self.title_bounce_done = true
@@ -980,7 +979,7 @@ function UIManager:draw_flash_animation()
     if self.record_anim_stage == 3 then
         local text = self.record_anim_text
         local text_width = #text * 4
-        local text_y = y_center - 3 -- center text vertically
+        local text_y = y_center - 3
 
         if self.record_anim_height >= 8 and self.record_anim_width >= text_width then
             local pulse = sin(Game.t * 8) * 3 + 3 -- cycles through colors 0-6
@@ -995,7 +994,7 @@ function UIManager:setup_tile_respawn_animations(old_map)
     self.tile_respawn_anims = {}
     self.tile_respawn_active = false
 
-    -- find tiles that were destroyed (present in original level but missing in old_map)
+    -- find tiles that were destroyed and are now missing
     for i = 1, Map.width * Map.height do
         local original_tile = Game.levels[Game.current_level][i]
         local old_tile = old_map[i]
@@ -1005,8 +1004,6 @@ function UIManager:setup_tile_respawn_animations(old_map)
             local idx0 = i - 1
             local tx = idx0 % Map.width
             local ty = flr(idx0 / Map.width)
-
-            -- add to respawn animation list
             local delay = (tx + ty) * 0.06
             add(
                 self.tile_respawn_anims, {
@@ -1054,7 +1051,6 @@ function UIManager:update_level_transition()
 
             if not Game.player then return end
 
-            -- defer spawn until player is actually visible (after messages/transition)
             Game.player:set_position(Map.start_x, Map.start_y)
             Game.player.pending_spawn = true
             Game.player.spawning = false
@@ -1200,7 +1196,7 @@ function UIManager:update_flash_animation()
     if self.record_anim_stage == 1 then
         self.record_anim_height = 1
         self.record_anim_width = 128
-        self.record_anim_x = damp(0, self.record_anim_x, p) -- slide from right to left
+        self.record_anim_x = damp(0, self.record_anim_x, p)
 
         if self.record_anim_timer >= 0.5 then advance_to(2) end
     elseif self.record_anim_stage == 2 then
@@ -1646,9 +1642,6 @@ function ParticleSystem:draw()
         return
     end
     for p in all(self.particles) do
-        -- if only_ui and not p.is_ui then goto continue end
-        -- if not only_ui and p.is_ui then goto continue end
-
         local size = p.life * 2
         local col = p.col
         if p.is_trail then
@@ -1746,8 +1739,6 @@ end
 
 function Map:draw()
     local ay = 4
-
-    -- draw a map with offset
     local function draw_map(map_data, x_offset, y_offset)
         y_offset = y_offset or 0
         for tx = 0, self.width - 1 do
