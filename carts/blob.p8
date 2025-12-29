@@ -54,8 +54,8 @@ function Player.new(x, y)
             moving = false, move_timer = 0,
             w = 4, offset_y = 0,
             bounce_timer = 0, fall_timer = 0,
-            spawn_timer = 0, spawn_duration = 0.6,
-            beam_frac = 0.15, beam_visible = 0.6,
+            spawn_timer = 0, spawn_duration = 0.3,
+            beam_frac = 0.15, beam_visible = 0.3,
             spawning = not (Game.level_transition or Game:is_showing_messages()),
             pending_spawn = (Game.level_transition or Game:is_showing_messages()),
             can_move = false, input_buffered = false, buffered_dir = 0,
@@ -290,7 +290,7 @@ function Player:update_spawn()
         p.spawn_timer = (p.spawn_timer or 0) + 1 / 30
     end
 
-    local dur = p.spawn_duration or 0.6
+    local dur = p.spawn_duration or 0.3
     local prog = (p.spawn_timer or 0) / dur
     local beam_visible = p.beam_visible or ((p.beam_frac or 0.15) * dur)
 
@@ -334,7 +334,7 @@ function Player:draw()
     local offset_y = p.offset_y or 0
     local ball_y = py + offset_y - s / 2
     local spawning_active = p.spawning or (p.spawn_flash and p.spawn_flash > 0)
-    local dur = p.spawn_duration or 0.6
+    local dur = p.spawn_duration or 0.3
     local spawn_prog = 1
     local s_draw = s * spawn_prog
 
@@ -344,7 +344,7 @@ function Player:draw()
         local beam_visible = p.beam_visible or ((p.beam_frac or 0.15) * dur)
         local spawn_timer = p.spawn_timer or 0
         local show_beam = spawn_timer < beam_visible or (p.spawn_flash and p.spawn_flash > 0)
-        local light_r = 40 * (1 - spawn_prog)
+        local light_r = 32 * (1 - spawn_prog)
 
         if light_r > 1 then
             local lr1 = flr(light_r)
