@@ -5,39 +5,18 @@ __lua__
 -- by praghus
 ------------------------------------------------------------------------------
 cartdata("blob_best_times")
--- poke(0x5f2e, 1)
--- pal(0, 129, 1)
 
--- CORE GAME STATE ----------------------------------------------------------
-t = 0
-music_on = false
-game_state = "title" -- "title", "playing", "won", "lost"
-firstinit = true
-immortal = false -- debug mode to prevent falling off
+function _init()
+    Game:init()
+end
 
--- LEVEL STATE ---------------------------------------------------------------
-current_level = 1
-next_level = 2
-levels = {}
-level_time = 0 -- time counter for current level in seconds
-level_cleared = false
-level_cleared_timer = 0
-level_transition = false
-level_transition_direction = 0 -- -1 for left, 1 for right
-level_transition_new_anims = {}
-level_transition_phase = "slide" -- "slide", "fall"
-level_transition_offset = 0
-level_transition_started = false
+function _update()
+    Game:update()
+end
 
--- MAP STATE -----------------------------------------------------------------
-start_x, start_y = 0, 0
-map_width, map_height = 8, 8
-map_tiles = map_width * map_height
-tile_size = 16
-current_map = {}
-old_map = {}
-tiles_left = 0
-total_tiles = 0
+function _draw()
+    Game:draw()
+end
 
 -- GRAPHICS -------------------------------------------------------------------
 tile_sprite_map = { [1] = 32, [2] = 34, [3] = 36, [5] = 42 }
@@ -50,503 +29,163 @@ palette = {
     [3] = { 0, 1, 3, 1, 3, 11 },
     [4] = { 0, 1, 2, 1, 2, 14 }
 }
-debris_color_map = {
-    [7] = { 11, 3 }, [8] = { 11, 3 }, [9] = { 11, 3 }, [10] = { 11, 3 },
-    [11] = { 12, 1 }, [12] = { 12, 1 }, [13] = { 12, 1 }, [14] = { 12, 1 }
+
+tile_meta = {
+    -- teleport / special tiles
+    [7] = { debris = { 11, 3 }, anim_base = 96 }, -- up
+    [8] = { debris = { 11, 3 }, anim_base = 64 }, -- right
+    [9] = { debris = { 11, 3 }, anim_base = 112 }, -- down
+    [10] = { debris = { 11, 3 }, anim_base = 80 }, -- left
+    [11] = { debris = { 12, 1 }, anim_base = 86 }, -- up-right
+    [12] = { debris = { 12, 1 }, anim_base = 70 }, -- down-right
+    [13] = { debris = { 12, 1 }, anim_base = 118 }, -- down-left
+    [14] = { debris = { 12, 1 }, anim_base = 102 } -- up-left
 }
 
--- CAMERA & EFFECTS ----------------------------------------------------------
-cam_x = 0
-cam_y = 0
-shake_timer = 0
-shake_intensity = 0
-
--- PARTICLES -------------------------------------------------------------------
-particles = {}
-max_particles = 140 -- safety cap for particles to avoid FPS drops
-
--- UI STATE -------------------------------------------------------------------
-show_leaderboard = false
-title_menu_index = 1
-title_fade = 0
-title_drop_y = -40
-title_drop_vy = 0
-title_bounce_done = false
-title_anim_timer = 0
-leaderboard_anim = 0
-progress_flash = 0
-record_anim_stage = 0
-record_anim_timer = 0
-record_anim_x = 0
-record_anim_height = 2
-tile_respawn_anims = {}
-tile_respawn_active = false
-tile_flashes = {}
-tile_flash_duration = 0.06
--- BEST TIMES -------------------------------------------------------------------
-best_times = {} -- stores best time for each level
----------------------------------------------------------------------------------
-
-function _init()
-    menuitem(1, "music: " .. (music_on and "on" or "off"), toggle_music)
-    menuitem(2, "back to title", return_to_title)
-
-    cls(0)
-
-    if firstinit then
-        current_level = 11
-        game_state = "title"
-        if music_on then
-            music(0)
-        end
-    end
-    firstinit = false
-
-    if game_state == "title" then
-        return
-    end
-
-    reset_map()
-
-    player = create_player(start_x, start_y)
-    level_time = 0
-    game_state = "playing"
-    tiles_left = count_tiles()
-    total_tiles = tiles_left
-    particles = {}
-    tile_respawn_anims = {}
-    tile_respawn_active = false
-    level_cleared = false
-    level_cleared_timer = 0
-
-    init_player_flags(player)
-end
-
-function _update()
-    t += 0.01
-    update_common_effects()
-    if game_state == "title" then
-        update_title_state()
-    elseif game_state == "playing" then
-        update_playing_state()
-    elseif game_state == "won" then
-        update_won_state()
-    elseif game_state == "lost" then
-        update_lost_state()
-    end
-end
-
-function _draw()
-    if game_state == "title" then
-        draw_title_screen()
-        return
-    end
-
-    local shake_x, shake_y = 0, 0
-    if shake_timer > 0 then
-        shake_x = rnd(shake_intensity) - shake_intensity / 2
-        shake_y = rnd(shake_intensity) - shake_intensity / 2
-    end
-
-    camera(0, 0)
-    draw_background()
-    camera(shake_x + cam_x, shake_y + cam_y)
-    draw_board()
-    draw_particles(false)
-
-    if is_player_visible(player) then
-        draw_player(player, shake_x + cam_x, shake_y + cam_y)
-    end
-
-    camera(0, 0)
-    draw_gui()
-    draw_particles(true)
-
-    if not level_transition then
-        draw_messages()
-    end
-end
-
 -->8
--- STATE MANAGEMENT
+-- PLAYER
 -------------------------------------------------------------------------------
-function start_game()
-    game_state = "playing"
-    set_level(current_level, true, true)
-    _init()
+Player = Player or {}
+Player.__index = Player
+
+function Player.new(x, y)
+    local p = setmetatable(
+        {
+            grid_x = x, grid_y = y,
+            old_x = x, old_y = y,
+            moving = false, move_timer = 0,
+            w = 4, offset_y = 0,
+            bounce_timer = 0, fall_timer = 0,
+            spawn_timer = 0, spawn_duration = 0.6,
+            beam_frac = 0.15, beam_visible = 0.6,
+            spawning = not (Game.level_transition or Game:is_showing_messages()),
+            pending_spawn = (Game.level_transition or Game:is_showing_messages()),
+            can_move = false, input_buffered = false, buffered_dir = 0,
+            can_hit = true, prev_size = 4, reached_peak = false
+        }, Player
+    )
+    return p
 end
 
-function reset_all_best_times()
-    for i = 1, #levels do
-        best_times[i] = nil
-    end
-    save_best_times()
+function Player:set_position(x, y)
+    self.grid_x = x
+    self.grid_y = y
+    self.old_x = x
+    self.old_y = y
 end
 
-function toggle_music()
-    music_on = not music_on
-    menuitem(1, "music: " .. (music_on and "on" or "off"), toggle_music)
-    if music_on then music(0) else music(-1) end
+function Player:start_spawn_at(x, y)
+    self.spawning = true
+    self.pending_spawn = false
+    self.spawn_timer = 0
+    self.spawn_flash = nil
+    self.w = self.w or 4
+    self.fall_timer = 0
+    self.falling = false
+    self:set_position(x, y)
+    self:reset_flags()
 end
 
-function return_to_title()
-    restart_game()
+function Player:reset_flags()
+    self.moving = false
+    self.falling = false
+    self.move_timer = 0
+    self.fall_timer = 0
+    self.can_hit = true
+    self.prev_size = 4
+    self.reached_peak = false
+    self.can_move = false
+    self.input_buffered = false
+    self.buffered_dir = 0
 end
 
-function restart_game()
-    current_level = 1
-    game_state = "title"
-    title_fade = 0
-    title_drop_y = -40
-    title_drop_vy = 0
-    title_bounce_done = false
-    tile_respawn_anims = {}
-    tile_respawn_active = false
-    title_drop_y = -40
-    title_drop_vy = 0
-    title_bounce_done = false
-    title_anim_timer = 0
-end
-
-function handle_level_completion()
-    if record_anim_stage > 0 then return end
-
-    level_cleared = false
-    level_cleared_timer = 0
-
-    local nextn = current_level + 1
-    if nextn > #levels then
-        current_level = 1
-        game_state = "won"
-    else
-        set_level(nextn)
-    end
-end
-
-function handle_player_input()
-    if not player then return end
-
-    -- block input while spawn animation / flash is active
-    if player.spawning or (player.spawn_flash and player.spawn_flash > 0) then
-        player.input_buffered = false
-        player.buffered_dir = 0
+function Player:handle_input()
+    if self.spawning or (self.spawn_flash and self.spawn_flash > 0) then
+        self.input_buffered = false
+        self.buffered_dir = 0
         return
     end
 
     if btn(0) then
-        player.buffered_dir = 0
-        player.input_buffered = true
+        self.buffered_dir = 0
+        self.input_buffered = true
     elseif btn(1) then
-        player.buffered_dir = 1
-        player.input_buffered = true
+        self.buffered_dir = 1
+        self.input_buffered = true
     elseif btn(2) then
-        player.buffered_dir = 2
-        player.input_buffered = true
+        self.buffered_dir = 2
+        self.input_buffered = true
     elseif btn(3) then
-        player.buffered_dir = 3
-        player.input_buffered = true
+        self.buffered_dir = 3
+        self.input_buffered = true
     else
-        player.input_buffered = false
+        self.input_buffered = false
     end
 end
 
--->8
--- UPDATE FUNCTIONS
--------------------------------------------------------------------------------
-function update_level_transition()
-    -- reset camera during transition
-    cam_x, cam_y = 0, 0
+function Player:update()
+    self:update_spawn()
 
-    if level_transition_phase == "slide" then
-        level_transition_offset = lerp(level_transition_offset, 128 * level_transition_direction, 0.8)
-        if abs(level_transition_offset - 128 * level_transition_direction) < 32 then
-            level_transition_phase = "fall"
-        end
-    elseif level_transition_phase == "fall" then
-        local all_new_finished = true
-        for anim in all(level_transition_new_anims) do
-            anim.timer += 1 / 30
-            if anim.timer >= 0 then
-                anim.vy = anim.vy or 0
-                local dy = anim.end_y - anim.current_y
-                anim.vy += dy * 0.45
-                anim.vy *= 0.65
-                anim.current_y += anim.vy
-                if abs(anim.current_y - anim.end_y) > 0.6 or abs(anim.vy) > 0.15 then
-                    all_new_finished = false
-                end
-            else
-                all_new_finished = false
-            end
-        end
-        if all_new_finished then
-            level_transition = false
-            level_transition_started = false
-            current_level = next_level
-            _init()
-
-            -- reset camera after transition
-            cam_x, cam_y = 0, 0
-
-            if not player then return end
-
-            local gx, gy = player.grid_x, player.grid_y
-
-            -- if out of map or not on edge -> keep camera centered
-            if gx < 0 or gx >= map_width or gy < 0 or gy >= map_height then return end
-            if gx ~= 0 and gx ~= map_width - 1 and gy ~= 0 and gy ~= map_height - 1 then return end
-
-            local px, py = tile_to_px(gx, gy)
-            local left_margin, right_margin = 24, 128 - 24
-            local top_margin, bottom_margin = 24, 128 - 24
-
-            if gx == 0 then
-                cam_x = px - left_margin
-            elseif gx == map_width - 1 then
-                cam_x = px - right_margin
-            end
-
-            if gy == 0 then
-                cam_y = py - top_margin
-            elseif gy == map_height - 1 then
-                cam_y = py - bottom_margin
-            end
-
-            local max_nudge = 48
-            cam_x = clamp(cam_x, -max_nudge, max_nudge)
-            cam_y = clamp(cam_y, -max_nudge, max_nudge)
-        end
-    end
-end
-
-function update_common_effects()
-    if player then update_spawn(player) end
-    if player and player.pending_spawn and is_player_visible(player) then
-        player.pending_spawn = false
-        player.spawning = true
-        player.spawn_timer = 0
-        player.spawn_flash = 0
-        player.input_buffered = false
-        player.buffered_dir = 0
-    end
-    if shake_timer > 0 then shake_timer -= 1 end
-    if progress_flash > 0 then
-        progress_flash -= 0.32
-        if progress_flash < 0 then progress_flash = 0 end
-    end
-    if level_transition then
-        update_level_transition()
-        return
-    end
-    update_particles()
-    update_flash_animation()
-    update_tile_flashes()
-    update_tile_respawn_animations()
-end
-
-function update_particles()
-    local to_remove = {}
-    for p in all(particles) do
-        p.x += p.vx
-        p.y += p.vy
-        if not p.is_trail then p.vy += 0.1 end
-        if p.is_rect then p.rotation += p.rot_speed end
-        p.life -= 0.02
-        if p.life <= 0 then add(to_remove, p) end
-    end
-    for p in all(to_remove) do
-        del(particles, p)
-    end
-end
-
-function update_title_state()
-    if show_leaderboard and leaderboard_anim < 1 then
-        leaderboard_anim = min(1, leaderboard_anim + 0.08)
-    elseif not show_leaderboard and leaderboard_anim > 0 then
-        leaderboard_anim = max(0, leaderboard_anim - 0.12)
-    end
-
-    if not title_menu_index then title_menu_index = 1 end
-
-    if show_leaderboard then
-        if btn(4) and btnp(5) then reset_all_best_times() end
-        if btnp(5) and not btn(4) then
-            show_leaderboard = false
-            return
-        end
-    end
-
-    if not show_leaderboard and title_bounce_done then
-        if btnp(2) then
-            title_menu_index = max(1, title_menu_index - 1)
-        elseif btnp(3) then
-            title_menu_index = min(3, title_menu_index + 1)
-        end
-
-        if btnp(5) and not btn(4) then
-            if title_menu_index == 1 then
-                start_game()
-            elseif title_menu_index == 2 then
-                toggle_music()
-            elseif title_menu_index == 3 then
-                show_leaderboard = true
-            end
-        end
-    end
-end
-
-function update_player_state()
-    update_spawn(player)
-
-    if player.falling then
-        update_player_falling()
-    elseif player.moving then
-        update_player_moving()
+    if self.falling then
+        self:update_falling()
+    elseif self.moving then
+        self:update_moving()
     else
-        handle_player_input()
+        self:handle_input()
     end
-    if is_player_visible(player) then
-        update_bounce(player)
+
+    if is_player_visible(self) then
+        self:update_bounce()
     end
 end
 
-function update_camera()
-    local target_cam_x = cam_x
-    local target_cam_y = cam_y
-
-    if not level_transition and player then
-        local on_left = (player.grid_x == 0)
-        local on_right = (player.grid_x == map_width - 1)
-        local on_top = (player.grid_y == 0)
-        local on_bottom = (player.grid_y == map_height - 1)
-
-        if on_left or on_right or on_top or on_bottom then
-            local px, py = tile_to_px(player.grid_x, player.grid_y)
-            local left_margin = 24
-            local right_margin = 128 - 24
-            local top_margin = 24
-            local bottom_margin = 128 - 24
-
-            if on_left then
-                target_cam_x = px - left_margin
-            elseif on_right then
-                target_cam_x = px - right_margin
-            end
-
-            if on_top then
-                target_cam_y = py - top_margin
-            elseif on_bottom then
-                target_cam_y = py - bottom_margin
-            end
-
-            local max_nudge = 48
-            target_cam_x = clamp(target_cam_x, -max_nudge, max_nudge)
-            target_cam_y = clamp(target_cam_y, -max_nudge, max_nudge)
-        else
-            target_cam_x = 0
-            target_cam_y = 0
-        end
-    else
-        target_cam_x = 0
-        target_cam_y = 0
-    end
-
-    local follow_speed = 0.08
-    cam_x = lerp(target_cam_x, cam_x, follow_speed)
-    cam_y = lerp(target_cam_y, cam_y, follow_speed)
-
-    if abs(cam_x - target_cam_x) < 0.25 then cam_x = target_cam_x end
-    if abs(cam_y - target_cam_y) < 0.25 then cam_y = target_cam_y end
-end
-
-function update_playing_state()
-    if not player then return end
-    if level_transition then return end
-
-    if level_cleared then
-        level_cleared_timer += 1 / 30
-        if level_cleared_timer >= 1 then
-            handle_level_completion()
-        end
-        return
-    end
-
-    level_time += 1 / 30
-
-    update_player_state()
-    update_camera()
-end
-
-function update_player_falling()
-    player.fall_timer += 0.08
-    if player.fall_timer >= 1 then
+function Player:update_falling()
+    self.fall_timer += 0.08
+    if self.fall_timer >= 1 then
+        Game:set_state("lost")
         sfx(13)
-        game_state = "lost"
     end
 end
 
-function update_player_moving()
-    player.move_timer += 0.08
-    if player.move_timer >= 1 then
-        player.moving = false
-        player.move_timer = 0
-        player.old_x = player.grid_x
-        player.old_y = player.grid_y
+function Player:update_moving()
+    local p = self
+    p.move_timer += 0.08
+    if p.move_timer >= 1 then
+        p.moving = false
+        p.move_timer = 0
+        p.old_x = p.grid_x
+        p.old_y = p.grid_y
 
-        if player.grid_x < 0 or player.grid_x >= map_width
-                or player.grid_y < 0 or player.grid_y >= map_height then
-            if immortal then
-                player.grid_x = player.old_x
-                player.grid_y = player.old_y
+        if p.grid_x < 0 or p.grid_x >= Map.width
+                or p.grid_y < 0 or p.grid_y >= Map.height then
+            if Game.immortal then
+                p.grid_x = p.old_x
+                p.grid_y = p.old_y
             else
-                player.falling = true
-                player.fall_timer = 0
+                p.falling = true
+                p.fall_timer = 0
             end
         else
-            local tile = get_tile(player.grid_x, player.grid_y)
+            local tile = Map:get(p.grid_x, p.grid_y)
             if tile == 0 then
-                if immortal then
-                    player.grid_x = player.old_x
-                    player.grid_y = player.old_y
+                if Game.immortal then
+                    p.grid_x = p.old_x
+                    p.grid_y = p.old_y
                 else
-                    player.falling = true
-                    player.fall_timer = 0
+                    p.falling = true
+                    p.fall_timer = 0
                 end
             else
-                player.can_hit = true
-                player.reached_peak = false
+                p.can_hit = true
+                p.reached_peak = false
             end
         end
     end
 end
 
-function update_tile_respawn_animations()
-    if not tile_respawn_active then return end
+function Player:update_bounce()
+    local p = self
 
-    local all_finished = true
-
-    for anim in all(tile_respawn_anims) do
-        if anim.timer >= 0 then
-            anim.current_y = lerp(anim.target_y, anim.current_y, 0.5)
-            if abs(anim.current_y - anim.target_y) > 0.5 then
-                all_finished = false
-            end
-        else
-            all_finished = false
-        end
-
-        anim.timer += 1 / 30
-    end
-
-    if all_finished then
-        tile_respawn_active = false
-        tile_respawn_anims = {}
-    end
-end
-
-function update_bounce(p)
-    if not p then return end
-    -- if ball is falling, animate fall (zoom only)
     if p.falling then
         local t = p.fall_timer
         local size = 8 * (1 - t) -- from 8 to 0
@@ -600,7 +239,7 @@ function update_bounce(p)
                 p.can_move = false
 
                 -- create trail from start to end position
-                -- create_trail(p.old_x, p.old_y, nx, ny)
+                ParticleSystem:create_trail(p.old_x, p.old_y, nx, ny)
             end
         end
 
@@ -624,9 +263,9 @@ function update_bounce(p)
         -- ball reached smallest size (tile touch)
         if prev_size > min_size and p.w <= min_size then
             if p.can_hit then
-                local tile = get_tile(p.grid_x, p.grid_y)
+                local tile = Map:get(p.grid_x, p.grid_y)
                 if tile == 0 then
-                    if not immortal then
+                    if not Game.immortal then
                         -- empty tile - start falling
                         p.falling = true
                         p.fall_timer = 0
@@ -637,7 +276,7 @@ function update_bounce(p)
                     -- teleport tile - hit it and start teleport animation
                     if tile >= 7 and tile <= 14 then
                         sfx(11)
-                        hit_tile(p.grid_x, p.grid_y)
+                        Map:hit_tile(p.grid_x, p.grid_y)
                         local nx2, ny2 = p.grid_x, p.grid_y
                         if tile == 10 then
                             nx2 = p.grid_x - 2 -- left (2 tiles)
@@ -648,17 +287,13 @@ function update_bounce(p)
                         elseif tile == 7 then
                             ny2 = p.grid_y - 2 -- up (2 tiles)
                         elseif tile == 14 then
-                            nx2 = p.grid_x - 1 -- up-left (diag)
-                            ny2 = p.grid_y - 1
+                            nx2, ny2 = p.grid_x - 1, p.grid_y - 1 -- up-left (diag)
                         elseif tile == 11 then
-                            nx2 = p.grid_x + 1 -- up-right (diag)
-                            ny2 = p.grid_y - 1
+                            nx2, ny2 = p.grid_x + 1, p.grid_y - 1 -- up-right (diag)
                         elseif tile == 13 then
-                            nx2 = p.grid_x - 1 -- down-left (diag)
-                            ny2 = p.grid_y + 1
+                            nx2, ny2 = p.grid_x - 1, p.grid_y + 1 -- down-left (diag)
                         elseif tile == 12 then
-                            nx2 = p.grid_x + 1 -- down-right (diag)
-                            ny2 = p.grid_y + 1
+                            nx2, ny2 = p.grid_x + 1, p.grid_y + 1 -- down-right (diag)
                         end
 
                         p.old_x = p.grid_x
@@ -668,7 +303,7 @@ function update_bounce(p)
                         p.moving = true
                         p.move_timer = 0
 
-                        create_trail(p.old_x, p.old_y, nx2, ny2)
+                        ParticleSystem:create_trail(p.old_x, p.old_y, nx2, ny2)
 
                         -- block until next cycle and reset peak
                         p.can_hit = false
@@ -676,7 +311,7 @@ function update_bounce(p)
                     else
                         -- normal tile - hit it with bounce sound
                         sfx(11)
-                        hit_tile(p.grid_x, p.grid_y)
+                        Map:hit_tile(p.grid_x, p.grid_y)
                         -- block until next cycle and reset peak
                         p.can_hit = false
                         p.reached_peak = false
@@ -704,23 +339,18 @@ function update_bounce(p)
     p.offset_y = -1.5 - bounce * 5
 end
 
-function update_tile_flashes()
-    if #tile_flashes == 0 then return end
-    local to_finalize = {}
-    for f in all(tile_flashes) do
-        f.timer += 1 / 30
-        if f.timer >= tile_flash_duration then
-            add(to_finalize, f)
-        end
-    end
-    for f in all(to_finalize) do
-        finalize_tile_removal(f)
-        del(tile_flashes, f)
-    end
-end
+function Player:update_spawn()
+    local p = self
 
-function update_spawn(p)
-    if not p or (not p.spawning and not (p.spawn_flash and p.spawn_flash > 0)) then return end
+    -- if spawn was deferred until player is visible, start it now
+    if p.pending_spawn and is_player_visible(p) then
+        p.pending_spawn = false
+        p.spawning = true
+        p.spawn_timer = 0
+        p.spawn_flash = nil
+        p.input_buffered = false
+        p.buffered_dir = 0
+    end
 
     if p.spawning then
         p.spawn_timer = (p.spawn_timer or 0) + 1 / 30
@@ -728,12 +358,12 @@ function update_spawn(p)
 
     local dur = p.spawn_duration or 0.6
     local prog = (p.spawn_timer or 0) / dur
-    local beam_visible = p.beam_visible or ((p.beam_frac or 0.3) * dur)
+    local beam_visible = p.beam_visible or ((p.beam_frac or 0.15) * dur)
 
     if p.spawning and prog >= 1 then
         p.spawning = false
         p.spawn_timer = dur
-        p.spawn_flash = p.spawn_flash or 0.4
+        p.spawn_flash = p.spawn_flash or 0.2
     end
 
     if p.spawn_flash and p.spawn_flash > 0 then
@@ -742,493 +372,41 @@ function update_spawn(p)
     end
 end
 
-function update_flash_animation()
-    if record_anim_stage == 0 then return end
-
-    record_anim_timer += 0.08
-
-    if record_anim_stage == 1 then
-        record_anim_height = 1
-        record_anim_width = 128
-        record_anim_x = lerp(0, 128, min(1, record_anim_timer)) -- slide from right to left
-
-        if record_anim_timer >= 0.5 then
-            record_anim_stage = 2
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 2 then
-        record_anim_x = 0
-        record_anim_width = 128
-        record_anim_height = lerp(16, 1, min(1, record_anim_timer))
-
-        if record_anim_timer >= 0.3 then
-            record_anim_stage = 3
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 3 then
-        record_anim_x = 0
-        record_anim_width = 128
-        record_anim_height = 11
-
-        if record_anim_timer >= 2 then
-            record_anim_stage = 4
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 4 then
-        record_anim_x = 0
-        record_anim_width = 128
-        record_anim_height = lerp(1, 16, min(1, record_anim_timer))
-
-        if record_anim_timer >= 0.5 then
-            record_anim_stage = 5
-            record_anim_timer = 0
-        end
-    elseif record_anim_stage == 5 then
-        record_anim_x = 0
-        record_anim_height = 1
-        record_anim_width = lerp(0, 128, min(1, record_anim_timer))
-
-        if record_anim_timer >= 0.5 then
-            record_anim_stage = 0
-            record_anim_timer = 0
-        end
-    end
-end
-
-function update_lost_state()
-    if not level_transition then
-        center_camera(-14)
-    end
-
-    if btnp(5) then reset_level(current_level) end
-
-    if not level_transition_started then
-        if btn(4) and btnp(1) then
-            set_level(current_level + 1)
-        elseif btn(4) and btnp(0) then
-            set_level(current_level - 1)
-        end
-    end
-end
-
-function update_won_state()
-    center_camera()
-    if btnp(5) then
-        restart_game()
-    end
-end
-
-function center_camera(offset_y)
-    cam_x = lerp(0, cam_x, 0.2)
-    cam_y = lerp(offset_y or 0, cam_y, 0.2)
-    if abs(cam_x) < 0.25 then cam_x = 0 end
-    if abs(cam_y) < 0.25 then cam_y = 0 end
-end
-
-function reset_level(level)
-    current_level = level or 1
-    lives = 1
-    level_time = 0
-    particles = {}
-    tile_respawn_anims = {}
-    tile_respawn_active = false
-    game_state = "playing"
-    player = create_player(start_x, start_y)
-    init_player_flags(player)
-    reset_map()
-    center_camera()
-end
-
-function save_old_map()
-    old_map = {}
-    for i = 1, map_tiles do
-        old_map[i] = levels[current_level][i]
-    end
-end
-
-function set_level(n, force, skip_slide)
-    if not n then return end
-
-    if n > #levels then
-        n = 1
-    elseif n < 1 then
-        n = #levels
-    end
-
-    if n == current_level and not force then return end
-
-    level_transition_started = true
-    next_level = n
-    cam_x, cam_y = 0, 0
-    level_transition = true
-    tile_respawn_anims = {}
-    tile_respawn_active = false
-    level_transition_new_anims = {}
-
-    save_old_map()
-    trigger_flash_animation(68, "get ready!")
-
-    local ay = 5
-
-    for tx = 0, map_width - 1 do
-        for ty = 0, map_height - 1 do
-            local idx = ty * map_width + tx + 1
-            if levels[next_level][idx] ~= 0 then
-                local end_y = ay + ty * tile_size
-                local start_y = end_y - tile_size
-                add(
-                    level_transition_new_anims, {
-                        x = tx,
-                        y = ty,
-                        tile = levels[next_level][idx],
-                        timer = -((ty * map_width + tx) * 0.02),
-                        start_y = start_y,
-                        current_y = start_y,
-                        end_y = end_y
-                    }
-                )
-            end
-        end
-    end
-    if skip_slide then
-        level_transition_phase = "fall"
-        level_transition_offset = 0
-        level_transition_direction = 0
+function Player:get_screen_pos()
+    local center_x, center_y = 7, 11
+    local render_x, render_y
+    if self.falling then
+        render_x = self.grid_x
+        render_y = self.grid_y
+    elseif self.moving then
+        local t = self.move_timer
+        local ease_t = 1 - (1 - t) * (1 - t)
+        render_x = self.old_x + (self.grid_x - self.old_x) * ease_t
+        render_y = self.old_y + (self.grid_y - self.old_y) * ease_t
     else
-        level_transition_phase = "slide"
-        level_transition_offset = 0
-        level_transition_direction = next_level > current_level and -1 or 1
+        render_x = self.grid_x
+        render_y = self.grid_y
     end
+
+    local px = render_x * Map.tile_size + center_x
+    local py = render_y * Map.tile_size + center_y
+    return px, py, render_x, render_y, center_x, center_y
 end
 
--->8
--- PARTICLE SYSTEM
--------------------------------------------------------------------------------
-function create_debris_particles(px, py, col1, col2)
-    col2 = col2 or col1
-    create_particle(px, py, col1, -2, -2, 1.5, false, true, true)
-    create_particle(px, py, col1, 2, -2, 1.5, false, true, true)
-    create_particle(px, py, col2, -2, 2, 1.5, false, true, true)
-    create_particle(px, py, col2, 2, 2, 1.5, false, true, true)
-end
-
-function create_particle(x, y, col, vx, vy, life, is_trail, is_rect, is_ui)
-    local p = {
-        x = x,
-        y = y,
-        vx = vx or (rnd(2) - 1) * 2,
-        vy = vy or -rnd(2) - 0.5,
-        life = life or 1,
-        col = col,
-        is_trail = is_trail or false,
-        is_rect = is_rect or false,
-        is_ui = is_ui or false,
-        rotation = 0,
-        rot_speed = (rnd(2) - 1) * 0.2
-    }
-    if #particles >= max_particles then
-        return
-    end
-    add(particles, p)
-end
-
-function create_simple_particle(x, y, col)
-    create_particle(x, y, col, nil, nil, nil, false, false, false)
-end
-
-function create_trail(old_gx, old_gy, new_gx, new_gy)
-    local old_px, old_py = tile_to_px(old_gx, old_gy)
-    local new_px, new_py = tile_to_px(new_gx, new_gy)
-
-    for i = 0, 15 do
-        local t = i / 15
-        local trail_x = old_px + (new_px - old_px) * t
-        local trail_y = old_py + (new_py - old_py) * t
-
-        create_particle(trail_x + rnd(4) - 2, trail_y + rnd(4) - 2, 8, 0, 0, 0.8, true)
-    end
-end
-
-function draw_particles(only_ui)
-    if not game_state == "playing" or level_transition then
-        return
-    end
-    for p in all(particles) do
-        if only_ui and not p.is_ui then goto continue end
-        if not only_ui and p.is_ui then goto continue end
-
-        local size = p.life * 2
-        local col = p.col
-        if p.is_trail then
-            size = p.life * 3.5
-            col = p.life > 0.6 and 7 or (p.life > 0.3 and 6 or 5)
-            circfill(p.x, p.y, size, col)
-        elseif p.is_rect then
-            local w = 3
-            local h = 3
-            if flr(p.rotation * 2) % 2 == 0 then
-                rectfill(p.x - w, p.y - h / 2, p.x + w, p.y + h / 2, col)
-            else
-                rectfill(p.x - h / 2, p.y - w, p.x + h / 2, p.y + w, col)
-            end
-        else
-            circfill(p.x, p.y, size, col)
-        end
-
-        ::continue::
-    end
-end
-
--->8
--- MAP FUNCTIONS
--------------------------------------------------------------------------------
-function check_level_completion()
-    local prev = tiles_left or count_tiles()
-    tiles_left = count_tiles()
-    if tiles_left < prev then
-        progress_flash = 1
-    end
-    if tiles_left <= 0 then
-        check_best_time()
-        level_cleared = true
-        level_cleared_timer = 0
-        particles = {}
-        player.grid_x = 0
-        player.grid_y = 0
-        player.old_x = 0
-        player.old_y = 0
-        player.moving = false
-    end
-end
-
-function count_tiles()
-    local count = 0
-    for i = 1, map_tiles do
-        local v = current_map[i]
-        -- count only destructible tiles (1,2,3) and teleport tiles
-        if v == 1 or v == 2 or v == 3
-                or (v >= 7 and v <= 14) then
-            count += 1
-        end
-    end
-    return count
-end
-
-function get_tile(x, y)
-    if x < 0 or x >= map_width or y < 0 or y >= map_height then
-        return 0
-    end
-    local idx = y * map_width + x + 1
-    return current_map[idx]
-end
-
-function set_tile(x, y, v)
-    if x >= 0 and x < map_width and y >= 0 and y < map_height then
-        local idx = y * map_width + x + 1
-        current_map[idx] = v
-    end
-end
-
-function reset_map()
-    local old_current_map = {}
-    if current_map then
-        for i = 1, map_tiles do
-            old_current_map[i] = current_map[i]
-        end
-    end
-
-    current_map = {}
-    start_x = 0
-    start_y = 0
-    for i = 1, map_tiles do
-        local v = levels[current_level][i]
-        -- if tile 4 marks player start, record its position and treat it as platform (id 5)
-        if v == 4 then
-            local idx0 = i - 1
-            start_x = idx0 % map_width
-            start_y = flr(idx0 / map_width)
-            v = 5
-        end
-        current_map[i] = v
-    end
-
-    -- setup tile respawn animations for tiles that were destroyed
-    if old_current_map and #old_current_map > 0 then
-        setup_tile_respawn_animations(old_current_map)
-    end
-
-    tiles_left = count_tiles()
-end
-
-function setup_tile_respawn_animations(old_map)
-    tile_respawn_anims = {}
-    tile_respawn_active = false
-
-    -- find tiles that were destroyed (present in original level but missing in old_map)
-    for i = 1, map_tiles do
-        local original_tile = levels[current_level][i]
-        local old_tile = old_map[i]
-
-        -- if tile was destructible in original and is now missing/empty
-        if (original_tile == 1 or original_tile == 2 or original_tile == 3 or (original_tile >= 7 and original_tile <= 14)) and old_tile == 0 then
-            local idx0 = i - 1
-            local tx = idx0 % map_width
-            local ty = flr(idx0 / map_width)
-
-            -- add to respawn animation list
-            local delay = (tx + ty) * 0.06
-            add(
-                tile_respawn_anims, {
-                    x = tx,
-                    y = ty,
-                    timer = -delay, -- start with negative timer so first tiles animate immediately
-                    target_y = ty * tile_size,
-                    current_y = ty * tile_size + 8, -- start 8 pixels below
-                    delay = 0 -- no delay needed since we use negative timer
-                }
-            )
-            tile_respawn_active = true
-        end
-    end
-end
-
-function trigger_tile_flash(x, y, remove_after)
-    -- avoid duplicates
-    for f in all(tile_flashes) do
-        if f.x == x and f.y == y then
-            return
-        end
-    end
-    if remove_after == nil then remove_after = true end
-    local entry = { x = x, y = y, timer = 0, remove_after = remove_after, tile = get_tile(x, y) }
-    add(tile_flashes, entry)
-end
-
-function get_flash_at(x, y)
-    for f in all(tile_flashes) do
-        if f.x == x and f.y == y then return f end
-    end
-    return nil
-end
-
-function handle_teleport(x, y, particle_col1, particle_col2)
-    local px, py = tile_to_px(x, y)
-    local world_px = px - cam_x
-    local world_py = py - cam_y
-    trigger_shake()
-    sfx(12)
-    set_tile(x, y, 0)
-    create_debris_particles(world_px, world_py, particle_col1, particle_col2)
-    check_level_completion()
-end
-
-function hit_tile(x, y)
-    local tile = get_tile(x, y)
-    if tile == 7 then
-        handle_teleport(x, y, 11, 3) -- up
-        return
-    elseif tile == 11 then
-        handle_teleport(x, y, 12, 1) -- up-right
-        return
-    elseif tile == 8 then
-        handle_teleport(x, y, 11, 3) -- right
-        return
-    elseif tile == 12 then
-        handle_teleport(x, y, 12, 1) -- down-right
-        return
-    elseif tile == 9 then
-        handle_teleport(x, y, 11, 3) -- down
-        return
-    elseif tile == 13 then
-        handle_teleport(x, y, 12, 1) -- down-left
-        return
-    elseif tile == 10 then
-        handle_teleport(x, y, 11, 3) -- left
-        return
-    elseif tile == 14 then
-        handle_teleport(x, y, 12, 1) -- up-left
-        return
-    end
-
-    -- tiles 1,2,3 can be hit (5 is permanent platform)
-    -- destructible tiles have values 1,2,3 (representing 1..3 hits)
-    if tile == 1 or tile == 2 or tile == 3 then
-        trigger_shake()
-        local px, py = tile_to_px(x, y)
-
-        for i = 1, 8 do
-            local col = rnd(1) > 0.5 and 10 or 9
-            create_simple_particle(px, py, col)
-        end
-
-        sfx(12)
-
-        local new_tile = tile - 1
-        local will_remove = new_tile <= 0
-
-        trigger_tile_flash(x, y, will_remove)
-
-        if not will_remove then
-            set_tile(x, y, new_tile)
-            sfx(11)
-        end
-    end
-end
-
-function get_teleport_anim_sprite(tile)
-    local anim_frame = flr((t * 24) % 6)
-    if tile == 10 then
-        return 80 + anim_frame -- left
-    elseif tile == 8 then
-        return 64 + anim_frame -- right
-    elseif tile == 9 then
-        return 112 + anim_frame -- down
-    elseif tile == 7 then
-        return 96 + anim_frame -- up
-    elseif tile == 14 then
-        return 102 + anim_frame -- up-left
-    elseif tile == 11 then
-        return 86 + anim_frame -- up-right
-    elseif tile == 13 then
-        return 118 + anim_frame -- down-left
-    elseif tile == 12 then
-        return 70 + anim_frame -- down-right
-    end
-    return 0
-end
-
-function finalize_tile_removal(f)
-    if not f or not f.remove_after then return end
-
-    local x, y = f.x, f.y
-    local px, py = tile_to_px(x, y)
-    set_tile(x, y, 0)
-    local world_px = px - cam_x
-    local world_py = py - cam_y
-
-    local tileid = f.tile or 0
-    local cols = debris_color_map[tileid]
-    local col1 = (cols and cols[1]) or 8
-    local col2 = (cols and cols[2]) or col1
-
-    create_debris_particles(world_px, world_py, col1, col2)
-    check_level_completion()
-end
-
--->8
--- DRAWS
--------------------------------------------------------------------------------
-function draw_player(p, camx, camy)
-    camx = camx or 0
-    camy = camy or 0
-
-    local px, py = compute_ball_screen_pos(p)
+function Player:draw()
+    local p = self
+    local px, py = p:get_screen_pos()
     local s = ball_render_size(p)
     local ball_y = py + (p.offset_y or 0) - s / 2
     local spawning_active = p and (p.spawning or (p.spawn_flash and p.spawn_flash > 0))
     local spawn_prog = 1
 
-    draw_player_shadow(p, 7, 11)
+    if not p.falling then
+        local tile = Map:get(p.grid_x, p.grid_y)
+        if tile ~= 0 and (p.w or 0) <= 7 then
+            circfill(p.grid_x * Map.tile_size + 7, p.grid_y * Map.tile_size + 11, 4, 5)
+        end
+    end
 
     if spawning_active then
         local spawn_timer = p.spawn_timer or 0
@@ -1237,8 +415,6 @@ function draw_player(p, camx, camy)
 
         local beam_visible = p.beam_visible or ((p.beam_frac or 0.3) * dur)
         local show_beam = spawn_timer < beam_visible or (p.spawn_flash and p.spawn_flash > 0)
-
-        -- radial light glow while appearing (draw under beam/flash)
         local light_r_max = 40
         local light_r = light_r_max * (1 - spawn_prog)
         if light_r > 1 then
@@ -1278,14 +454,6 @@ function draw_player(p, camx, camy)
     end
 end
 
-function draw_player_shadow(p, center_x, center_y)
-    if p.falling then return end
-    local tile = get_tile(p.grid_x, p.grid_y)
-    if tile ~= 0 and (p.w or 0) <= 7 then
-        circfill(p.grid_x * tile_size + center_x, p.grid_y * tile_size + center_y, 4, 5)
-    end
-end
-
 function draw_ball(px, ball_y, s)
     local highlight_size = max(1.5, s * 0.45)
     local highlight_offset = s * 0.35
@@ -1307,8 +475,1072 @@ function draw_ball(px, ball_y, s)
     end
 end
 
-function draw_tile_with_anim(tile, x, y)
+-->8
+-- MAP
+-------------------------------------------------------------------------------
+Map = {
+    current_map = nil,
+    width = 8,
+    height = 8,
+    tile_size = 16,
+    start_x = 0,
+    start_y = 0,
+    old_map = {},
+    tiles_left = 0,
+    total_tiles = 0
+}
+
+function Map:get(x, y)
+    if x < 0 or x >= self.width or y < 0 or y >= self.height then return 0 end
+    local idx = y * self.width + x + 1
+    return self.current_map[idx]
+end
+
+function Map:set(x, y, v)
+    if x >= 0 and x < self.width and y >= 0 and y < self.height then
+        local idx = y * self.width + x + 1
+        self.current_map[idx] = v
+    end
+end
+
+function Map:count_tiles()
+    --@todo: optimize tile counting (use lookup table or a small helper to test destructible/teleport ranges)
+    local count = 0
+    for i = 1, self.width * self.height do
+        local v = self.current_map[i]
+        if v == 1 or v == 2 or v == 3 or (v >= 7 and v <= 14) then
+            count += 1
+        end
+    end
+    return count
+end
+
+function Map:reset(skip_respawn)
+    local old_current_map = {}
+    if self.current_map then
+        for i = 1, self.width * self.height do
+            old_current_map[i] = self.current_map[i]
+        end
+    end
+
+    self.current_map = {}
+    for i = 1, self.width * self.height do
+        self.current_map[i] = 0
+    end
+    self.start_x = 0
+    self.start_y = 0
+    for i = 1, self.width * self.height do
+        local v = Game.levels[Game.current_level][i]
+        if v == 4 then
+            local idx0 = i - 1
+            self.start_x = idx0 % self.width
+            self.start_y = flr(idx0 / self.width)
+            v = 5
+        end
+        self.current_map[i] = v
+    end
+
+    if old_current_map and #old_current_map > 0 and not skip_respawn then
+        UIManager:setup_tile_respawn_animations(old_current_map)
+    end
+
+    self.tiles_left = self:count_tiles()
+    self.total_tiles = self.tiles_left
+end
+
+function Map:load_levels_from_native_map()
+    -- number of blocks that fit horizontally and vertically
+    local blocks_x = flr(128 / self.width)
+    local blocks_y = flr(32 / self.height)
+
+    for by = 0, blocks_y - 1 do
+        for bx = 0, blocks_x - 1 do
+            local ox = bx * self.width
+            local oy = by * self.height
+            local lvl = {}
+            local is_empty = true
+            for y = 0, self.height - 1 do
+                for x = 0, self.width - 1 do
+                    local v = mget(ox + x, oy + y)
+                    add(lvl, v)
+                    if v ~= 0 then is_empty = false end
+                end
+            end
+            -- only add non-empty maps so empty slots in __map__ are ignored
+            if not is_empty then
+                add(Game.levels, lvl)
+            end
+        end
+    end
+    Game:load_best_times()
+end
+
+-->8
+-- CAMERA
+-------------------------------------------------------------------------------
+Camera = {
+    x = 0,
+    y = 0,
+    shake_timer = 0,
+    shake_intensity = 0
+}
+
+function Camera:reset()
+    self.x, self.y = 0, 0
+end
+
+function Camera:center(offset_y)
+    self.x = damp(0, self.x, 0.2)
+    self.y = damp(offset_y or 0, self.y, 0.2)
+    if abs(self.x) < 0.25 then self.x = 0 end
+    if abs(self.y) < 0.25 then self.y = 0 end
+end
+
+function Camera:trigger_shake()
+    self.shake_timer = 6
+    self.shake_intensity = 2
+end
+
+function Camera:update_shake()
+    if self.shake_timer > 0 then
+        self.shake_timer -= 1
+    end
+end
+
+function Camera:get_shake()
+    if self.shake_timer > 0 then
+        local sx = rnd(self.shake_intensity) - self.shake_intensity / 2
+        local sy = rnd(self.shake_intensity) - self.shake_intensity / 2
+        return sx, sy
+    end
+    return 0, 0
+end
+
+function Camera:update()
+    local target_x = self.x
+    local target_y = self.y
+
+    if not Game.level_transition and Game.player then
+        local on_left = (Game.player.grid_x == 0)
+        local on_right = (Game.player.grid_x == Map.width - 1)
+        local on_top = (Game.player.grid_y == 0)
+        local on_bottom = (Game.player.grid_y == Map.height - 1)
+
+        if on_left or on_right or on_top or on_bottom then
+            local px, py = tile_to_px(Game.player.grid_x, Game.player.grid_y)
+            local left_margin = 24
+            local right_margin = 128 - 24
+            local top_margin = 24
+            local bottom_margin = 128 - 24
+
+            if on_left then
+                target_x = px - left_margin
+            elseif on_right then
+                target_x = px - right_margin
+            end
+
+            if on_top then
+                target_y = py - top_margin
+            elseif on_bottom then
+                target_y = py - bottom_margin
+            end
+
+            local max_nudge = 48
+            target_x = clamp(target_x, -max_nudge, max_nudge)
+            target_y = clamp(target_y, -max_nudge, max_nudge)
+        else
+            target_x = 0
+            target_y = 0
+        end
+    else
+        target_x = 0
+        target_y = 0
+    end
+
+    local follow_speed = 0.08
+    self.x = damp(target_x, self.x, follow_speed)
+    self.y = damp(target_y, self.y, follow_speed)
+
+    if abs(self.x - target_x) < 0.25 then self.x = target_x end
+    if abs(self.y - target_y) < 0.25 then self.y = target_y end
+end
+
+-->8
+-- UI MANAGER
+-------------------------------------------------------------------------------
+UIManager = {
+    show_leaderboard = false,
+    title_menu_index = 1,
+    title_fade = 0,
+    title_drop_y = -40,
+    title_drop_vy = 0,
+    title_bounce_done = false,
+    title_anim_timer = 0,
+    leaderboard_anim = 0,
+    progress_flash = 0,
+    record_anim_stage = 0,
+    record_anim_timer = 0,
+    record_anim_x = 0,
+    record_anim_height = 2,
+    record_anim_y_center = 64,
+    record_anim_width = 128,
+    record_anim_text = "",
+    tile_respawn_anims = {},
+    tile_respawn_active = false,
+    tile_flashes = {},
+    tile_flash_duration = 0.06
+}
+
+function UIManager:setup_tile_respawn_animations(old_map)
+    self.tile_respawn_anims = {}
+    self.tile_respawn_active = false
+
+    -- find tiles that were destroyed (present in original level but missing in old_map)
+    for i = 1, Map.width * Map.height do
+        local original_tile = Game.levels[Game.current_level][i]
+        local old_tile = old_map[i]
+
+        -- if tile was destructible in original and is now missing/empty
+        if (original_tile == 1 or original_tile == 2 or original_tile == 3 or (original_tile >= 7 and original_tile <= 14)) and old_tile == 0 then
+            local idx0 = i - 1
+            local tx = idx0 % Map.width
+            local ty = flr(idx0 / Map.width)
+
+            -- add to respawn animation list
+            local delay = (tx + ty) * 0.06
+            add(
+                self.tile_respawn_anims, {
+                    x = tx,
+                    y = ty,
+                    timer = -delay, -- start with negative timer so first tiles animate immediately
+                    target_y = ty * Map.tile_size,
+                    current_y = ty * Map.tile_size + 8, -- start 8 pixels below
+                    delay = 0 -- no delay needed since we use negative timer
+                }
+            )
+            self.tile_respawn_active = true
+        end
+    end
+end
+
+function UIManager:update_level_transition()
+    Camera:reset()
+
+    if Game.level_transition_phase == "slide" then
+        Game.level_transition_offset = damp(Game.level_transition_offset, 128 * Game.level_transition_direction, 0.8)
+        if abs(Game.level_transition_offset - 128 * Game.level_transition_direction) < 32 then
+            Game.level_transition_phase = "fall"
+        end
+    elseif Game.level_transition_phase == "fall" then
+        local all_new_finished = true
+        for anim in all(Game.level_transition_new_anims) do
+            anim.timer += 1 / 30
+            if anim.timer >= 0 then
+                anim.vy = anim.vy or 0
+                local dy = anim.end_y - anim.current_y
+                anim.vy += dy * 0.45
+                anim.vy *= 0.65
+                anim.current_y += anim.vy
+                if abs(anim.current_y - anim.end_y) > 0.6 or abs(anim.vy) > 0.15 then
+                    all_new_finished = false
+                end
+            else
+                all_new_finished = false
+            end
+        end
+        if all_new_finished then
+            Game.level_transition = false
+            Game.level_transition_started = false
+            Game.current_level = Game.next_level
+
+            if not Game.player then return end
+
+            -- defer spawn until player is actually visible (after messages/transition)
+            Game.player:set_position(Map.start_x, Map.start_y)
+            Game.player.pending_spawn = true
+            Game.player.spawning = false
+            Game.player.spawn_timer = 0
+            Game.player.spawn_flash = nil
+            Game.player.input_buffered = false
+            Game.player.buffered_dir = 0
+
+            local gx, gy = Game.player.grid_x, Game.player.grid_y
+
+            -- if out of map or not on edge -> keep camera centered
+            if gx < 0 or gx >= Map.width or gy < 0 or gy >= Map.height then return end
+            if gx ~= 0 and gx ~= Map.width - 1 and gy ~= 0 and gy ~= Map.height - 1 then return end
+
+            local px, py = tile_to_px(gx, gy)
+            local left_margin, right_margin = 24, 128 - 24
+            local top_margin, bottom_margin = 24, 128 - 24
+
+            if gx == 0 then
+                Camera.x = px - left_margin
+            elseif gx == Map.width - 1 then
+                Camera.x = px - right_margin
+            end
+
+            if gy == 0 then
+                Camera.y = py - top_margin
+            elseif gy == Map.height - 1 then
+                Camera.y = py - bottom_margin
+            end
+
+            local max_nudge = 48
+            Camera.x = clamp(Camera.x, -max_nudge, max_nudge)
+            Camera.y = clamp(Camera.y, -max_nudge, max_nudge)
+        end
+    end
+end
+
+function UIManager:update_common_effects()
+    if Camera then Camera:update_shake() end
+    if self.progress_flash > 0 then
+        self.progress_flash -= 0.32
+        if self.progress_flash < 0 then self.progress_flash = 0 end
+    end
+    if Game.level_transition then
+        self:update_level_transition()
+        return
+    end
+    ParticleSystem:update()
+    self:update_flash_animation()
+    self:update_tile_flashes()
+    self:update_tile_respawn_animations()
+end
+
+function UIManager:update_title_state()
+    if self.show_leaderboard and self.leaderboard_anim < 1 then
+        self.leaderboard_anim = min(1, self.leaderboard_anim + 0.08)
+    elseif not self.show_leaderboard and self.leaderboard_anim > 0 then
+        self.leaderboard_anim = max(0, self.leaderboard_anim - 0.12)
+    end
+
+    if not self.title_menu_index then self.title_menu_index = 1 end
+
+    if self.show_leaderboard then
+        if btn(4) and btnp(5) then Game:reset_all_best_times() end
+        if btnp(5) and not btn(4) then
+            self.show_leaderboard = false
+            return
+        end
+    end
+
+    if not self.show_leaderboard and self.title_bounce_done then
+        if btnp(2) then
+            self.title_menu_index = max(1, self.title_menu_index - 1)
+        elseif btnp(3) then
+            self.title_menu_index = min(3, self.title_menu_index + 1)
+        end
+
+        if btnp(5) and not btn(4) then
+            if self.title_menu_index == 1 then
+                Game:start()
+            elseif self.title_menu_index == 2 then
+                Game:toggle_music()
+            elseif self.title_menu_index == 3 then
+                self.show_leaderboard = true
+            end
+        end
+    end
+end
+
+function UIManager:update_tile_respawn_animations()
+    if not self.tile_respawn_active then return end
+
+    local all_finished = true
+
+    for anim in all(self.tile_respawn_anims) do
+        if anim.timer >= 0 then
+            anim.current_y = damp(anim.target_y, anim.current_y, 0.5)
+            if abs(anim.current_y - anim.target_y) > 0.5 then
+                all_finished = false
+            end
+        else
+            all_finished = false
+        end
+
+        anim.timer += 1 / 30
+    end
+
+    if all_finished then
+        self.tile_respawn_active = false
+        self.tile_respawn_anims = {}
+    end
+end
+
+function UIManager:update_tile_flashes()
+    if #self.tile_flashes == 0 then return end
+    local to_finalize = {}
+    for f in all(self.tile_flashes) do
+        f.timer += 1 / 30
+        if f.timer >= self.tile_flash_duration then
+            add(to_finalize, f)
+        end
+    end
+    for f in all(to_finalize) do
+        Map:finalize_tile_removal(f)
+        del(self.tile_flashes, f)
+    end
+end
+
+function UIManager:reset()
+    self.title_fade = 0
+    self.title_bounce_done = false
+    self.tile_respawn_anims = {}
+    self.tile_respawn_active = false
+    self.title_drop_y = -40
+    self.title_drop_vy = 0
+    self.title_bounce_done = false
+    self.title_anim_timer = 0
+end
+
+function UIManager:update_flash_animation()
+    if self.record_anim_stage == 0 then return end
+
+    self.record_anim_timer += 0.08
+
+    if self.record_anim_stage == 1 then
+        self.record_anim_height = 1
+        self.record_anim_width = 128
+        self.record_anim_x = damp(0, 128, min(1, self.record_anim_timer)) -- slide from right to left
+
+        if self.record_anim_timer >= 0.5 then
+            self.record_anim_stage = 2
+            self.record_anim_timer = 0
+        end
+    elseif self.record_anim_stage == 2 then
+        self.record_anim_x = 0
+        self.record_anim_width = 128
+        self.record_anim_height = damp(16, 1, min(1, self.record_anim_timer))
+
+        if self.record_anim_timer >= 0.3 then
+            self.record_anim_stage = 3
+            self.record_anim_timer = 0
+        end
+    elseif self.record_anim_stage == 3 then
+        self.record_anim_x = 0
+        self.record_anim_width = 128
+        self.record_anim_height = 11
+
+        if self.record_anim_timer >= 2 then
+            self.record_anim_stage = 4
+            self.record_anim_timer = 0
+        end
+    elseif self.record_anim_stage == 4 then
+        self.record_anim_x = 0
+        self.record_anim_width = 128
+        self.record_anim_height = damp(1, 16, min(1, self.record_anim_timer))
+
+        if self.record_anim_timer >= 0.5 then
+            self.record_anim_stage = 5
+            self.record_anim_timer = 0
+        end
+    elseif self.record_anim_stage == 5 then
+        self.record_anim_x = 0
+        self.record_anim_height = 1
+        self.record_anim_width = damp(0, 128, min(1, self.record_anim_timer))
+
+        if self.record_anim_timer >= 0.5 then
+            self.record_anim_stage = 0
+            self.record_anim_timer = 0
+        end
+    end
+end
+
+function UIManager:trigger_tile_flash(x, y, remove_after)
+    for f in all(self.tile_flashes) do
+        if f.x == x and f.y == y then
+            return
+        end
+    end
+    if remove_after == nil then remove_after = true end
+    local entry = { x = x, y = y, timer = 0, remove_after = remove_after, tile = Map:get(x, y) }
+    add(self.tile_flashes, entry)
+end
+
+function UIManager:get_flash_at(x, y)
+    for f in all(self.tile_flashes) do
+        if f.x == x and f.y == y then return f end
+    end
+    return nil
+end
+
+-->8
+-- CORE GAME STATE ------------------------------------------------------------
+Game = {
+    t = 0,
+    music_on = false,
+    game_state = "title", -- "title", "playing", "won", "lost"
+    immortal = false, -- debug mode to prevent falling off
+    levels = {},
+    level_transition_phase = nil,
+    level_transition_offset = 0,
+    level_transition_direction = 0,
+    level_transition_new_anims = {},
+    level_transition_started = false,
+    level_transition = false,
+    next_level = 1,
+    current_level = 3,
+    best_times = {} -- stores best time for each level
+}
+
+function Game:init()
+    self.level_time = 0
+    self.level_cleared = false
+    self.level_cleared_timer = 0
+    self.player = Player.new(Map.start_x, Map.start_y)
+
+    menuitem(1, "music: " .. (Game.music_on and "on" or "off"), function() Game:toggle_music() end)
+    menuitem(2, "back to title", function() Game:restart() end)
+
+    Map:load_levels_from_native_map()
+    ParticleSystem:clear()
+
+    if self.player then
+        self.player:set_position(Map.start_x, Map.start_y)
+        self.player.pending_spawn = true
+        self.player.spawning = false
+        self.player.spawn_timer = 0
+        self.player.spawn_flash = nil
+        self.player.input_buffered = false
+        self.player.buffered_dir = 0
+    end
+end
+
+function Game:set_state(s)
+    self.game_state = s
+end
+
+function Game:start()
+    self.game_state = "playing"
+    self:set_level(self.current_level, true, true)
+end
+
+function Game:restart()
+    self.current_level = 1
+    self.game_state = "title"
+    UIManager:reset()
+end
+
+function Game:update()
+    self.t += 0.01
+    UIManager:update_common_effects()
+    if self.game_state == "title" then
+        UIManager:update_title_state()
+    elseif self.game_state == "playing" then
+        self:update_playing_state()
+    elseif self.game_state == "won" then
+        self:update_won_state()
+    elseif self.game_state == "lost" then
+        self:update_lost_state()
+    end
+end
+
+function Game:draw()
+    if self.game_state == "title" then
+        UIManager:draw_title_screen()
+        return
+    end
+
+    local shake_x, shake_y = Camera:get_shake()
+
+    camera(0, 0)
+    UIManager:draw_background()
+    camera(shake_x + Camera.x, shake_y + Camera.y)
+    Map:draw()
+    ParticleSystem:draw(false)
+
+    if is_player_visible(self.player) then
+        self.player:draw()
+    end
+
+    camera(0, 0)
+    UIManager:draw_gui()
+    ParticleSystem:draw(true)
+
+    if not self.level_transition then
+        UIManager:draw_messages()
+    end
+end
+
+function Game:update_playing_state()
+    if not self.player then return end
+    if self.level_transition then return end
+
+    if self.level_cleared then
+        self.level_cleared_timer += 1 / 30
+        if self.level_cleared_timer >= 1 then
+            self:handle_level_completion()
+        end
+        return
+    end
+
+    self.level_time += 1 / 30
+
+    if self.player then self.player:update() end
+
+    Camera:update()
+end
+
+function Game:update_lost_state()
+    if not self.level_transition then
+        Camera:center(-14)
+    end
+
+    if btnp(5) then self:reset_level(self.current_level) end
+
+    if not self.level_transition_started then
+        if btn(4) and btnp(1) then
+            self:set_level(self.current_level + 1)
+            self.game_state = "playing"
+            if self.player then
+                self.player:start_spawn_at(Map.start_x, Map.start_y)
+            end
+        elseif btn(4) and btnp(0) then
+            self:set_level(self.current_level - 1)
+            self.game_state = "playing"
+            if self.player then
+                self.player:start_spawn_at(Map.start_x, Map.start_y)
+            end
+        end
+    end
+end
+
+function Game:update_won_state()
+    Camera:center()
+    if btnp(5) then
+        self:restart()
+    end
+end
+
+function Game:save_best_times()
+    for i = 1, min(#self.levels, 63) do
+        -- dget/dset supports indices 0-63, save 0 for metadata
+        if self.best_times[i] then
+            dset(i, self.best_times[i])
+        else
+            dset(i, -1) -- use -1 to indicate no time set
+        end
+    end
+    -- save number of levels in slot 0 as metadata
+    dset(0, #self.levels)
+end
+
+function Game:load_best_times()
+    self.best_times = {}
+    local saved_levels = dget(0)
+
+    if saved_levels > 0 then
+        for i = 1, min(saved_levels, 63) do
+            local saved_time = dget(i)
+            -- -1 means no time was saved
+            if saved_time >= 0 then
+                self.best_times[i] = saved_time
+            end
+        end
+    end
+
+    for i = 1, #self.levels do
+        if not self.best_times[i] then
+            self.best_times[i] = nil -- no best time initially
+        end
+    end
+end
+
+function Game:check_best_time()
+    local current_time = self.level_time
+    local level_idx = self.current_level
+
+    if not self.best_times[level_idx] or current_time < self.best_times[level_idx] then
+        self.best_times[level_idx] = current_time
+        UIManager:trigger_flash_animation(90, "new record!")
+        self:save_best_times()
+        return true
+    end
+
+    return false
+end
+
+function Game:reset_all_best_times()
+    for i = 1, #self.levels do
+        self.best_times[i] = nil
+    end
+    self:save_best_times()
+end
+
+function Game:set_level(n, force, skip_slide)
+    if not n then return end
+    if n > #self.levels then
+        n = 1
+    elseif n < 1 then
+        n = #self.levels
+    end
+    if type(n) ~= "number" then n = 1 end
+    if n == self.current_level and not force then return end
+
+    self.level_transition_new_anims = {}
+    self.level_transition_started = true
+    self.level_transition = true
+    self.next_level = n
+
+    UIManager:trigger_flash_animation(68, "get ready!")
+    Camera:reset()
+    Map:save_old_map()
+
+    local ay = 5
+    for tx = 0, Map.width - 1 do
+        for ty = 0, Map.height - 1 do
+            local idx = ty * Map.width + tx + 1
+            if self.levels[self.next_level][idx] ~= 0 then
+                local end_y = ay + ty * Map.tile_size
+                local start_y = end_y - Map.tile_size
+                add(
+                    self.level_transition_new_anims, {
+                        x = tx,
+                        y = ty,
+                        tile = self.levels[self.next_level][idx],
+                        timer = -((ty * Map.width + tx) * 0.02),
+                        start_y = start_y,
+                        current_y = start_y,
+                        end_y = end_y
+                    }
+                )
+            end
+        end
+    end
+    if skip_slide then
+        self.level_transition_phase = "fall"
+        self.level_transition_offset = 0
+        self.level_transition_direction = 0
+    else
+        self.level_transition_phase = "slide"
+        self.level_transition_offset = 0
+        self.level_transition_direction = self.next_level > self.current_level and -1 or 1
+    end
+
+    if type(self.next_level) == "number" then
+        self.current_level = self.next_level
+    else
+        self.current_level = 1
+    end
+
+    Map:reset(true)
+end
+
+function Game:reset_level(level)
+    if type(level) == "number" then
+        self.current_level = level
+    else
+        self.current_level = 1
+    end
+    self.lives = 1
+    self.level_time = 0
+    self.game_state = "playing"
+    self.level_cleared = false
+    self.level_cleared_timer = 0
+    self.level_transition = false
+    self.level_transition_started = false
+
+    ParticleSystem:clear()
+    Map:reset()
+    Camera:center()
+
+    if self.player then
+        self.player:start_spawn_at(Map.start_x, Map.start_y)
+    end
+end
+
+function Game:handle_level_completion()
+    if UIManager.record_anim_stage > 0 then return end
+
+    self.level_cleared = false
+    self.level_cleared_timer = 0
+
+    local nextn = self.current_level + 1
+    if nextn > #self.levels then
+        self.current_level = 1
+        self.game_state = "won"
+    else
+        self:set_level(nextn)
+    end
+end
+
+function Game:is_showing_messages()
+    return (self.level_cleared and self.level_cleared_timer < 5)
+            or self.game_state == "won"
+            or self.game_state == "lost"
+            or UIManager.record_anim_stage > 0
+end
+
+function Game:toggle_music()
+    self.music_on = not self.music_on
+    menuitem(1, "music: " .. (self.music_on and "on" or "off"), function() Game:toggle_music() end)
+    if self.music_on then music(0) else music(-1) end
+end
+
+-->8
+-- PARTICLE SYSTEM
+-------------------------------------------------------------------------------
+ParticleSystem = {}
+ParticleSystem.__index = ParticleSystem
+ParticleSystem.particles = {}
+ParticleSystem.max_particles = 140 -- safety cap for particles to avoid FPS drops
+
+function ParticleSystem:clear()
+    self.particles = {}
+end
+
+function ParticleSystem:create_particle(x, y, col, vx, vy, life, is_trail, is_rect, is_ui)
+    local p = {
+        x = x,
+        y = y,
+        vx = vx or (rnd(2) - 1) * 2,
+        vy = vy or -rnd(2) - 0.5,
+        life = life or 1,
+        col = col,
+        is_trail = is_trail or false,
+        is_rect = is_rect or false,
+        is_ui = is_ui or false,
+        rotation = 0,
+        rot_speed = (rnd(2) - 1) * 0.2
+    }
+    if #self.particles >= self.max_particles then
+        return
+    end
+    --@todo: when at capacity, consider dropping oldest particle instead of silently skipping
+    add(self.particles, p)
+end
+
+function ParticleSystem:create_simple_particle(x, y, col)
+    self:create_particle(x, y, col)
+end
+
+function ParticleSystem:create_debris_particles(px, py, col1, col2)
+    col2 = col2 or col1
+    self:create_particle(px, py, col1, -2, -2, 1.5, false, true, true)
+    self:create_particle(px, py, col1, 2, -2, 1.5, false, true, true)
+    self:create_particle(px, py, col2, -2, 2, 1.5, false, true, true)
+    self:create_particle(px, py, col2, 2, 2, 1.5, false, true, true)
+end
+
+function ParticleSystem:create_trail(old_gx, old_gy, new_gx, new_gy)
+    local old_px, old_py = tile_to_px(old_gx, old_gy)
+    local new_px, new_py = tile_to_px(new_gx, new_gy)
+
+    for i = 0, 15 do
+        local t = i / 15
+        local trail_x = old_px + (new_px - old_px) * t
+        local trail_y = old_py + (new_py - old_py) * t
+
+        self:create_particle(trail_x + rnd(4) - 2, trail_y + rnd(4) - 2, 8, 0, 0, 0.8, true)
+    end
+end
+
+function ParticleSystem:update()
+    local to_remove = {}
+    for p in all(self.particles) do
+        p.x += p.vx
+        p.y += p.vy
+        if not p.is_trail then p.vy += 0.1 end
+        if p.is_rect then p.rotation += p.rot_speed end
+        p.life -= 0.02
+        if p.life <= 0 then add(to_remove, p) end
+    end
+    for p in all(to_remove) do
+        del(self.particles, p)
+    end
+end
+
+function ParticleSystem:draw(only_ui)
+    if Game.game_state ~= "playing" or Game.level_transition then
+        return
+    end
+    for p in all(self.particles) do
+        if only_ui and not p.is_ui then goto continue end
+        if not only_ui and p.is_ui then goto continue end
+
+        local size = p.life * 2
+        local col = p.col
+        if p.is_trail then
+            size = p.life * 3.5
+            col = p.life > 0.6 and 7 or (p.life > 0.3 and 6 or 5)
+            circfill(p.x, p.y, size, col)
+        elseif p.is_rect then
+            local w = 3
+            local h = 3
+            if flr(p.rotation * 2) % 2 == 0 then
+                rectfill(p.x - w, p.y - h / 2, p.x + w, p.y + h / 2, col)
+            else
+                rectfill(p.x - h / 2, p.y - w, p.x + h / 2, p.y + w, col)
+            end
+        else
+            circfill(p.x, p.y, size, col)
+        end
+
+        ::continue::
+    end
+end
+
+-->8
+-- MAP FUNCTIONS
+-------------------------------------------------------------------------------
+function Map:check_level_completion()
+    local prev = self.tiles_left or self:count_tiles()
+    self.tiles_left = self:count_tiles()
+    if self.tiles_left < prev then
+        UIManager.progress_flash = 1
+    end
+    if self.tiles_left <= 0 then
+        Game:check_best_time()
+        Game.level_cleared = true
+        Game.level_cleared_timer = 0
+        ParticleSystem:clear()
+        Game.player.grid_x = 0
+        Game.player.grid_y = 0
+        Game.player.old_x = 0
+        Game.player.old_y = 0
+        Game.player.moving = false
+    end
+end
+
+function Map:save_old_map()
+    self.old_map = {}
+    for i = 1, self.width * self.height do
+        self.old_map[i] = Game.levels[Game.current_level][i]
+    end
+end
+
+function Map:handle_teleport(x, y, debris)
+    local px, py = tile_to_px(x, y)
+    local world_px = px - Camera.x
+    local world_py = py - Camera.y
+    sfx(12)
+    self:set(x, y, 0)
+    Camera:trigger_shake()
+    ParticleSystem:create_debris_particles(world_px, world_py, debris[1], debris[2])
+    Map:check_level_completion()
+end
+
+function Map:hit_tile(x, y)
+    local tile = self:get(x, y)
+    local teleport = tile_meta[tile]
+
+    if teleport then
+        self:handle_teleport(x, y, teleport.debris)
+        return
+    end
+
+    -- tiles 1,2,3 can be hit (5 is permanent platform)
+    if tile == 1 or tile == 2 or tile == 3 then
+        Camera:trigger_shake()
+        local px, py = tile_to_px(x, y)
+
+        for i = 1, 8 do
+            local col = rnd(1) > 0.5 and 10 or 9
+            ParticleSystem:create_simple_particle(px, py, col)
+        end
+
+        sfx(12)
+
+        local new_tile = tile - 1
+        local will_remove = new_tile <= 0
+
+        UIManager:trigger_tile_flash(x, y, will_remove)
+
+        if not will_remove then
+            Map:set(x, y, new_tile)
+            sfx(11)
+        end
+    end
+end
+
+function Map:draw()
+    local ay = 4
+
+    -- draw a map with offset
+    local function draw_map(map_data, x_offset, y_offset)
+        y_offset = y_offset or 0
+        for tx = 0, self.width - 1 do
+            local base_x = tx * self.tile_size + x_offset
+            -- early skip if entire column is off screen
+            if base_x > -self.tile_size and base_x < 128 then
+                for ty = 0, self.height - 1 do
+                    local idx = ty * self.width + tx + 1
+                    local s = map_data[idx]
+                    if s ~= 0 then
+                        local yy = ay + ty * self.tile_size + y_offset
+                        local animated_y = yy
+                        local should_draw = true
+                        if UIManager.tile_respawn_active then
+                            for anim in all(UIManager.tile_respawn_anims) do
+                                if anim.x == tx and anim.y == ty then
+                                    animated_y = ay + anim.current_y
+                                    -- only draw tile if its animation has started (timer >= 0)
+                                    should_draw = anim.timer >= 0
+                                    break
+                                end
+                            end
+                        end
+
+                        if should_draw then
+                            UIManager:draw_tile_with_anim(s, base_x, animated_y)
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- draw background circle in the middle
+    circfill(64 - Camera.x, 64 - Camera.y, 42, 0)
+
+    if Game.level_transition then
+        if Game.level_transition_phase == "slide" then
+            draw_map(self.old_map, Game.level_transition_offset)
+        elseif Game.level_transition_phase == "fall" then
+            for anim in all(Game.level_transition_new_anims) do
+                if anim.timer >= 0 and anim.tile and anim.tile ~= 0 then
+                    local base_x = anim.x * self.tile_size
+                    UIManager:draw_tile_with_anim(anim.tile, base_x, anim.current_y)
+                end
+            end
+        end
+    else
+        -- normal drawing (no transition)
+        draw_map(self.current_map, 0)
+    end
+end
+
+function Map:finalize_tile_removal(f)
+    if not f or not f.remove_after then return end
+
+    local x, y = f.x, f.y
+    local px, py = tile_to_px(x, y)
+    self:set(x, y, 0)
+    local world_px = px - Camera.x
+    local world_py = py - Camera.y
+
+    local tileid = f.tile or 0
+    local meta = tile_meta[tileid]
+    local col1 = (meta and meta.debris and meta.debris[1]) or 8
+    local col2 = (meta and meta.debris and meta.debris[2]) or col1
+
+    ParticleSystem:create_debris_particles(world_px, world_py, col1, col2)
+    Map:check_level_completion()
+end
+
+---------------------------------------------------------------
+function UIManager:draw_tile_with_anim(tile, x, y)
     local draw_tile = tile == 4 and 42 or tile
+
+    local function draw_tile_sprite(base_sprite, x, y)
+        spr(base_sprite, x, y)
+        spr(base_sprite + 1, x + 8, y)
+        spr(base_sprite + 16, x, y + 8)
+        spr(base_sprite + 17, x + 8, y + 8)
+    end
+
     if draw_tile >= 7 and draw_tile <= 14 then
         local bg_tile = (draw_tile >= 11 and draw_tile <= 14) and teleport2_bg_sprite or teleport1_bg_sprite
         draw_tile_sprite(bg_tile, x, y)
@@ -1319,10 +1551,10 @@ function draw_tile_with_anim(tile, x, y)
     end
 
     -- draw flash overlay if applicable
-    local tx = flr(x / tile_size)
+    local tx = flr(x / Map.tile_size)
     local ay = 4
-    local ty = flr((y - ay) / tile_size)
-    local f = get_flash_at(tx, ty)
+    local ty = flr((y - ay) / Map.tile_size)
+    local f = self:get_flash_at(tx, ty)
     if f then
         local base_sprite = map_tile_to_sprite(draw_tile)
         local src_x = (base_sprite % 16) * 8
@@ -1335,7 +1567,7 @@ function draw_tile_with_anim(tile, x, y)
             pal(c, 7)
         end
 
-        sspr(ssrc_x, ssrc_y, tile_size, tile_size, x, y, tile_size, tile_size)
+        sspr(ssrc_x, ssrc_y, Map.tile_size, Map.tile_size, x, y, Map.tile_size, Map.tile_size)
 
         -- if draw_tile >= 7 and draw_tile <= 14 then
         --     local icon_sprite = get_teleport_anim_sprite(draw_tile)
@@ -1346,122 +1578,63 @@ function draw_tile_with_anim(tile, x, y)
     end
 end
 
-function draw_board()
-    local ay = 4
-
-    -- draw a map with offset
-    local function draw_map(map_data, x_offset, y_offset)
-        y_offset = y_offset or 0
-        for tx = 0, map_width - 1 do
-            local base_x = tx * tile_size + x_offset
-            -- early skip if entire column is off screen
-            if base_x > -tile_size and base_x < 128 then
-                for ty = 0, map_height - 1 do
-                    local idx = ty * map_width + tx + 1
-                    local s = map_data[idx]
-                    if s ~= 0 then
-                        local yy = ay + ty * tile_size + y_offset
-                        local animated_y = yy
-                        local should_draw = true
-                        if tile_respawn_active then
-                            for anim in all(tile_respawn_anims) do
-                                if anim.x == tx and anim.y == ty then
-                                    animated_y = ay + anim.current_y
-                                    -- only draw tile if its animation has started (timer >= 0)
-                                    should_draw = anim.timer >= 0
-                                    break
-                                end
-                            end
-                        end
-
-                        if should_draw then
-                            draw_tile_with_anim(s, base_x, animated_y)
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    -- draw background circle in the middle
-    circfill(64 - cam_x, 64 - cam_y, 42, 0)
-
-    if level_transition then
-        if level_transition_phase == "slide" then
-            draw_map(old_map, level_transition_offset)
-        elseif level_transition_phase == "fall" then
-            for anim in all(level_transition_new_anims) do
-                if anim.timer >= 0 and anim.tile and anim.tile ~= 0 then
-                    local base_x = anim.x * tile_size
-                    draw_tile_with_anim(anim.tile, base_x, anim.current_y)
-                end
-            end
-        end
-    else
-        -- normal drawing (no transition)
-        draw_map(current_map, 0)
-    end
-end
-
-function draw_gui()
+function UIManager:draw_gui()
     rectfill(0, 0, 128, 9, 0)
     spr(128, 96, 1)
 
-    local display_level = (level_transition and next_level) or current_level
+    local display_level = (Game.level_transition and Game.next_level) or Game.current_level
     local level_text = "level " .. display_level
     print(level_text, 2, 3, 1)
     print(level_text, 2, 2, 6)
 
-    local time_text = (level_transition and "00:00") or format_time(level_time)
+    local time_text = (Game.level_transition and "00:00") or format_time(Game.level_time)
     local time_width = #time_text * 4
     print(time_text, 128 - time_width - 2, 3, 1)
     print(time_text, 128 - time_width - 2, 2, 6)
 end
 
-function draw_title_screen()
+function UIManager:draw_title_screen()
     local title_x, title_y = 33, 26
     local menu_x, menu_y = 64, title_y + 46
     local menu_spacing = 9
-    local pulse = sin(t * 2) * 0.5 + 0.5
+    local pulse = sin(Game.t * 2) * 0.5 + 0.5
 
-    if title_bounce_done then
+    if self.title_bounce_done then
         rectfill(14, 14, 112, 112, 0)
-        draw_background()
+        self:draw_background()
     else
         cls()
     end
 
-    title_anim_timer = (title_anim_timer or 0) + 1 / 30
+    self.title_anim_timer = (self.title_anim_timer or 0) + 1 / 30
 
-    if not show_leaderboard then
+    if not self.show_leaderboard then
         rectfill(20, 20, 106, 106, 0)
-        title_fade = mid(0, (title_fade or 0) + 0.05, 2)
-
-        if title_bounce_done == nil then title_bounce_done = false end
-        if not title_bounce_done then
-            title_drop_vy = (title_drop_vy or 0) + 0.9 -- gravity
-            title_drop_y = (title_drop_y or -40) + title_drop_vy
-            if title_drop_y >= 0 then
-                title_drop_y = 0
-                title_drop_vy = -title_drop_vy * 0.45 -- bounce with damping
-                if abs(title_drop_vy) < 0.6 then
-                    title_drop_vy = 0
-                    title_bounce_done = true
+        self.title_fade = mid(0, (self.title_fade or 0) + 0.05, 2)
+        if self.title_bounce_done == nil then self.title_bounce_done = false end
+        if not self.title_bounce_done then
+            self.title_drop_vy = (self.title_drop_vy or 0) + 0.9 -- gravity
+            self.title_drop_y = (self.title_drop_y or -40) + self.title_drop_vy
+            if self.title_drop_y >= 0 then
+                self.title_drop_y = 0
+                self.title_drop_vy = -self.title_drop_vy * 0.45 -- bounce with damping
+                if abs(self.title_drop_vy) < 0.6 then
+                    self.title_drop_vy = 0
+                    self.title_bounce_done = true
                 end
             end
         end
-        local cur_y = title_y + (title_drop_y or 0)
-
-        if title_fade < 1 then
-            if title_fade < 0.33 then
+        local cur_y = title_y + (self.title_drop_y or 0)
+        if self.title_fade < 1 then
+            if self.title_fade < 0.33 then
                 for c = 1, 15 do
                     pal(c, 0)
                 end
-            elseif title_fade < 0.66 then
+            elseif self.title_fade < 0.66 then
                 for c = 1, 15 do
                     pal(c, (c == 8 or c == 2 or c == 1) and 0 or 1)
                 end
-            elseif title_fade < 0.77 then
+            elseif self.title_fade < 0.77 then
                 for c = 1, 15 do
                     pal(c, 12)
                 end
@@ -1481,13 +1654,13 @@ function draw_title_screen()
 
         pal()
 
-        if title_bounce_done then
+        if self.title_bounce_done then
             local delay, flash_dur = 0.6, 0.8
-            if title_anim_timer >= delay then
-                rect(20, 20, 106, 106, title_anim_timer >= 0.75 and 1 or 0)
-                local ft = title_anim_timer - delay
+            if self.title_anim_timer >= delay then
+                rect(20, 20, 106, 106, self.title_anim_timer >= 0.75 and 1 or 0)
+                local ft = self.title_anim_timer - delay
                 if ft < flash_dur then
-                    local pulse = sin(t * 20)
+                    local pulse = sin(Game.t * 20)
                     local col = pulse > 0 and 7 or 10
                     print_centered("BOUNCING", cur_y - 8, col, 4)
                     print_centered("BY PRAgHUS", cur_y + 33, col, 4)
@@ -1498,37 +1671,37 @@ function draw_title_screen()
             end
             print("V1.1", 110, 120, 6)
 
-            if not title_menu_index then title_menu_index = 1 end
+            if not self.title_menu_index then self.title_menu_index = 1 end
             local items = {
                 "start",
-                (music_on and "music: on" or "music: off"),
+                (Game.music_on and "music: on" or "music: off"),
                 "best times"
             }
-            if title_anim_timer >= 0.6 then
+            if self.title_anim_timer >= 0.6 then
                 for i = 1, #items do
                     local yy = menu_y + (i - 1) * menu_spacing
-                    if i == title_menu_index and title_anim_timer >= 1.1 then
-                        rectfill(menu_x - 32, yy - 2, menu_x + 32, yy + 6, title_anim_timer >= 1.2 and 8 or 2)
+                    if i == self.title_menu_index and self.title_anim_timer >= 1.1 then
+                        rectfill(menu_x - 32, yy - 2, menu_x + 32, yy + 6, self.title_anim_timer >= 1.2 and 8 or 2)
                         print_centered(items[i], yy, 7)
                     else
-                        print_centered(items[i], yy, title_anim_timer >= 0.7 and 6 or 1)
+                        print_centered(items[i], yy, self.title_anim_timer >= 0.7 and 6 or 1)
                     end
                 end
             end
         end
     end
 
-    if leaderboard_anim > 0 then
-        draw_leaderboard()
+    if self.leaderboard_anim > 0 then
+        self:draw_leaderboard()
     end
 end
 
-function draw_leaderboard()
+function UIManager:draw_leaderboard()
     local board_width = 100
     local board_height = 100
     local board_x = (128 - board_width) / 2
-    local board_y = (128 - board_height) / 2 - (board_height * (1 - leaderboard_anim))
-    local k = flr(2 * cos(t * 4))
+    local board_y = (128 - board_height) / 2 - (board_height * (1 - UIManager.leaderboard_anim))
+    local k = flr(2 * cos(Game.t * 4))
 
     rectfill(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 0)
     rect(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 1)
@@ -1540,9 +1713,9 @@ function draw_leaderboard()
     local row_height = 8
     local levels_per_column = 8
 
-    local total_levels = #levels
+    local total_levels = #Game.levels
     local max_display = min(total_levels, levels_per_column * 2)
-    local bt = best_times
+    local bt = Game.best_times
 
     for i = 1, max_display do
         local col = 1
@@ -1571,12 +1744,14 @@ function draw_leaderboard()
     print_centered("press \x97 to close", board_y + board_height - 12, 6, 1)
 end
 
-function draw_background()
-    rectfill(16 - cam_x, 16 - cam_y, 114 - cam_x, 116 - cam_y, 0)
+function UIManager:draw_background()
+    --@todo: expensive per-frame work (loop 0..999). Consider caching star positions
+    --@todo: reduce iteration count or precompute background to improve FPS on low-end targets
+    rectfill(16 - Camera.x, 16 - Camera.y, 114 - Camera.x, 116 - Camera.y, 0)
     for i = 0, 999 do
         local x, y = rnd(128), rnd(128)
         local c = pget(x, y)
-        local plt = game_state == "title" and palette[0] or palette[current_level % #palette + 1]
+        local plt = Game.game_state == "title" and palette[0] or palette[Game.current_level % #palette + 1]
         local a = atan2(x - 64, y - 64)
         if plt[c] then
             if rnd(1.1) >= 1 then
@@ -1589,16 +1764,14 @@ function draw_background()
     end
 end
 
-function draw_messages()
-    -- local pulse = sin(t * 2) * 0.5 + 0.5
-    local pulse = sin(t * 4) * 0.5 + 0.5
+function UIManager:draw_messages()
+    local pulse = sin(Game.t * 4) * 0.5 + 0.5
     local color = 7 + flr(pulse * 3)
-    -- local color = flr(pulse * 6) + 8
 
-    if level_cleared and level_cleared_timer < 5 then
-        local time_text = "time: " .. format_time(level_time)
+    if Game.level_cleared and Game.level_cleared_timer < 5 then
+        local time_text = "time: " .. format_time(Game.level_time)
         local text1 = "level cleared!"
-        local best_time = best_times[current_level]
+        local best_time = Game.best_times[Game.current_level]
         local best_text = ""
         if best_time then
             best_text = "best: " .. format_time(best_time)
@@ -1614,39 +1787,49 @@ function draw_messages()
         if best_time then
             print_centered(best_text, 70, 6)
         end
-    elseif game_state == "won" then
+    elseif Game.game_state == "won" then
         rectfill(0, 50, 128, 70, 0)
         print_centered("all levels complete!", 54, 11)
         print_centered("press \x97 to restart", 62, 7)
-    elseif game_state == "lost" then
+    elseif Game.game_state == "lost" then
         rectfill(0, 0, 128, 8, 1)
         print_centered("press \x8e+<> to level skip", 2, 6, 0)
         print_centered("press \x97 to restart", 20, color, 0)
     end
-    draw_flash_animation()
+    self:draw_flash_animation()
 end
 
-function draw_flash_animation()
-    if record_anim_stage == 0 then return end
+function UIManager:trigger_flash_animation(y_offset, text)
+    if self.record_anim_stage > 0 then return end
+    self.record_anim_stage = 1
+    self.record_anim_timer = 0
+    self.record_anim_x = 128
+    self.record_anim_height = 1
+    self.record_anim_y_center = y_offset or 64
+    self.record_anim_width = 128
+    self.record_anim_text = text or ""
+end
 
-    local y_center = record_anim_y_center or 64
-    local y_pos = y_center - record_anim_height / 2
+function UIManager:draw_flash_animation()
+    if self.record_anim_stage == 0 then return end
+
+    local y_center = self.record_anim_y_center or 64
+    local y_pos = y_center - self.record_anim_height / 2
     local rect_color = 7
 
-    if record_anim_stage == 3 then
+    if self.record_anim_stage == 3 then
         rect_color = 0
     end
 
-    rectfill(record_anim_x, y_pos, record_anim_x + record_anim_width - 1, y_pos + record_anim_height - 1, rect_color)
+    rectfill(self.record_anim_x, y_pos, self.record_anim_x + self.record_anim_width - 1, y_pos + self.record_anim_height - 1, rect_color)
 
-    if record_anim_stage == 3 then
-        local text = record_anim_text
+    if self.record_anim_stage == 3 then
+        local text = self.record_anim_text
         local text_width = #text * 4
-        -- local text_x = record_anim_x + (record_anim_width - text_width) / 2
         local text_y = y_center - 3 -- center text vertically
 
-        if record_anim_height >= 8 and record_anim_width >= text_width then
-            local pulse = sin(t * 8) * 3 + 3 -- cycles through colors 0-6
+        if self.record_anim_height >= 8 and self.record_anim_width >= text_width then
+            local pulse = sin(Game.t * 8) * 3 + 3 -- cycles through colors 0-6
             local color = flr(pulse) + 8 -- colors 8-14 (bright colors)
             if color > 14 then color = 8 + (color - 15) end
             print_centered(text, text_y, color)
@@ -1654,20 +1837,14 @@ function draw_flash_animation()
     end
 end
 
-function draw_tile_sprite(base_sprite, x, y)
-    spr(base_sprite, x, y)
-    spr(base_sprite + 1, x + 8, y)
-    spr(base_sprite + 16, x, y + 8)
-    spr(base_sprite + 17, x + 8, y + 8)
-end
-
 -->8
 -- HELPERS AND UTILS
 -------------------------------------------------------------------------------
-function lerp(a, b, i) return i * a + (1 - i) * b end
+function damp(a, b, i) return i * a + (1 - i) * b end
 function clamp(a, mi, ma) return min(max(a, mi), ma) end
+function lerp(a, b, t) return a + (b - a) * t end
 function map_tile_to_sprite(id) return tile_sprite_map[id] or id end
-function tile_to_px(x, y) return 0 + x * tile_size + 8, y * tile_size + 8 end
+function tile_to_px(x, y) return 0 + x * Map.tile_size + 8, y * Map.tile_size + 8 end
 function ball_render_size(p) return (p and (p.w or 0) or 0) / 1.8 end
 
 function print_centered(text, y, col, shadow_col)
@@ -1687,96 +1864,13 @@ function print_centered(text, y, col, shadow_col)
     print(text, 65 - width / 2, y, col)
 end
 
-function trigger_shake()
-    shake_timer = 6
-    shake_intensity = 2
-end
-
-function load_levels_from_native_map()
-    -- number of blocks that fit horizontally and vertically
-    local blocks_x = 128 / map_width
-    local blocks_y = flr(32 / map_height)
-
-    for by = 0, blocks_y - 1 do
-        for bx = 0, blocks_x - 1 do
-            local ox = bx * map_width
-            local oy = by * map_height
-            local lvl = {}
-            local is_empty = true
-            for y = 0, map_height - 1 do
-                for x = 0, map_width - 1 do
-                    local v = mget(ox + x, oy + y)
-                    add(lvl, v)
-                    if v ~= 0 then is_empty = false end
-                end
-            end
-            -- only add non-empty maps so empty slots in __map__ are ignored
-            if not is_empty then
-                add(levels, lvl)
-            end
-        end
+function get_teleport_anim_sprite(tile)
+    local anim_frame = flr((Game.t * 24) % 6)
+    local meta = tile_meta[tile]
+    if meta and meta.anim_base then
+        return meta.anim_base + anim_frame
     end
-end
-
-function save_best_times()
-    for i = 1, min(#levels, 63) do
-        -- dget/dset supports indices 0-63, save 0 for metadata
-        if best_times[i] then
-            dset(i, best_times[i])
-        else
-            dset(i, -1) -- use -1 to indicate no time set
-        end
-    end
-    -- save number of levels in slot 0 as metadata
-    dset(0, #levels)
-end
-
-function load_best_times()
-    best_times = {}
-    local saved_levels = dget(0)
-
-    if saved_levels > 0 then
-        for i = 1, min(saved_levels, 63) do
-            local saved_time = dget(i)
-            if saved_time >= 0 then
-                -- -1 means no time was saved
-                best_times[i] = saved_time
-            end
-        end
-    end
-end
-
-function check_best_time()
-    local current_time = level_time
-    local level_idx = current_level
-
-    if not best_times[level_idx] or current_time < best_times[level_idx] then
-        best_times[level_idx] = current_time
-        trigger_flash_animation(90)
-        save_best_times()
-        return true
-    end
-
-    return false
-end
-
-function trigger_flash_animation(y_offset, text)
-    -- don't restart if animation is already playing
-    if record_anim_stage > 0 then return end
-    record_anim_stage = 1
-    record_anim_timer = 0
-    record_anim_x = 128
-    record_anim_height = 1
-    record_anim_y_center = y_offset or 64
-    record_anim_width = 128
-    record_anim_text = text or "new record!"
-end
-
-function is_showing_messages()
-    return (level_cleared and level_cleared_timer < 5)
-            or game_state == "won"
-            or game_state == "lost"
-            or record_anim_stage > 0
+    return 0
 end
 
 function is_ball_drawn(p)
@@ -1786,28 +1880,7 @@ function is_ball_drawn(p)
 end
 
 function is_player_visible(p)
-    return p and not level_cleared and not level_transition and not is_showing_messages() and is_ball_drawn(p)
-end
-
-function compute_ball_screen_pos(p)
-    local center_x, center_y = 7, 11
-    local render_x, render_y
-    if p.falling then
-        render_x = p.grid_x
-        render_y = p.grid_y
-    elseif p.moving then
-        local t = p.move_timer
-        local ease_t = 1 - (1 - t) * (1 - t)
-        render_x = p.old_x + (p.grid_x - p.old_x) * ease_t
-        render_y = p.old_y + (p.grid_y - p.old_y) * ease_t
-    else
-        render_x = p.grid_x
-        render_y = p.grid_y
-    end
-
-    local px = render_x * tile_size + center_x
-    local py = render_y * tile_size + center_y
-    return px, py, render_x, render_y, center_x, center_y
+    return p and not Game.level_cleared and not Game.level_transition and not Game:is_showing_messages() and is_ball_drawn(p)
 end
 
 function format_time(time_seconds)
@@ -1828,43 +1901,6 @@ function format_time(time_seconds)
     return time_text
 end
 
--->8
--- INITIALIZATION
--------------------------------------------------------------------------------
-function create_player(x, y)
-    local p = {
-        grid_x = x, -- tile position (target position)
-        grid_y = y,
-        old_x = x, -- previous position (for interpolation)
-        old_y = y,
-        moving = false, -- is ball moving
-        move_timer = 0, -- timer for movement animation (0 to 1)
-        w = 4, -- ball size (will animate 4-16)
-        offset_y = 0, -- Y offset for animation (0 down, -4 up)
-        bounce_timer = 0, -- timer for bounce animation
-        fall_timer = 0
-    }
-    local needs_delay = level_transition or is_showing_messages()
-
-    p.spawn_timer = 0
-    p.spawn_duration = 0.6
-    p.beam_frac = 0.3
-    p.beam_visible = 0.6
-    p.spawning = not needs_delay
-    p.pending_spawn = needs_delay
-
-    return p
-end
-
-function init_player_flags(p)
-    p.can_move = false
-    p.input_buffered = false
-    p.buffered_dir = 0
-    p.can_hit = true
-    p.prev_size = 4
-    p.reached_peak = false
-end
-
 function init_background_palette()
     for j = 0, #palette do
         local plt = palette[j]
@@ -1876,20 +1912,7 @@ function init_background_palette()
     end
 end
 
-function init_best_times()
-    -- load saved times from cartridge data first
-    load_best_times()
-    -- if no saved data, initialize with nil
-    for i = 1, #levels do
-        if not best_times[i] then
-            best_times[i] = nil -- no best time initially
-        end
-    end
-end
-
-load_levels_from_native_map()
 init_background_palette()
-init_best_times()
 
 __gfx__
 000000008888888899999999aaaaaaaa777777767777777600000000bbbbbbb3bbbbbbb3bbbbbbb3bbbbbbb37777777c7777777c7777777c7777777c00000000
