@@ -252,7 +252,7 @@ function Player:update_bounce()
                         p.can_hit = false
                         p.reached_peak = false
                         ParticleSystem:create_trail(p.old_x, p.old_y, nx2, ny2)
-                        Map:hit_tile(p.grid_x, p.grid_y)
+                        Map:hit_tile(p.old_x, p.old_y)
                     elseif not p.spawning then
                         p.can_hit = false
                         p.reached_peak = false
