@@ -32,20 +32,20 @@ palette = {
 
 tile_meta = {
     -- teleport / special tiles
-    [7] = { debris = { 11, 3 }, anim_base = 96 }, -- up
-    [8] = { debris = { 11, 3 }, anim_base = 64 }, -- right
-    [9] = { debris = { 11, 3 }, anim_base = 112 }, -- down
-    [10] = { debris = { 11, 3 }, anim_base = 80 }, -- left
-    [11] = { debris = { 12, 1 }, anim_base = 86 }, -- up-right
-    [12] = { debris = { 12, 1 }, anim_base = 70 }, -- down-right
-    [13] = { debris = { 12, 1 }, anim_base = 118 }, -- down-left
-    [14] = { debris = { 12, 1 }, anim_base = 102 } -- up-left
+    [7] = { debris = { 11, 3 }, anim_base = 96, offset = { 0, -2 } }, -- up
+    [8] = { debris = { 11, 3 }, anim_base = 64, offset = { 2, 0 } }, -- right
+    [9] = { debris = { 11, 3 }, anim_base = 112, offset = { 0, 2 } }, -- down
+    [10] = { debris = { 11, 3 }, anim_base = 80, offset = { -2, 0 } }, -- left
+    [11] = { debris = { 12, 1 }, anim_base = 86, offset = { 1, -1 } }, -- up-right
+    [12] = { debris = { 12, 1 }, anim_base = 70, offset = { 1, 1 } }, -- down-right
+    [13] = { debris = { 12, 1 }, anim_base = 118, offset = { -1, 1 } }, -- down-left
+    [14] = { debris = { 12, 1 }, anim_base = 102, offset = { -1, -1 } } -- up-left
 }
 
 -->8
 -- PLAYER
 -------------------------------------------------------------------------------
-Player = Player or {}
+Player = {}
 Player.__index = Player
 
 function Player.new(x, y)
@@ -80,8 +80,6 @@ function Player:start_spawn_at(x, y)
     self.spawn_timer = 0
     self.spawn_flash = nil
     self.w = self.w or 4
-    self.fall_timer = 0
-    self.falling = false
     self:set_position(x, y)
     self:reset_flags()
 end
@@ -101,26 +99,19 @@ end
 
 function Player:handle_input()
     if self.spawning or (self.spawn_flash and self.spawn_flash > 0) then
-        self.input_buffered = false
         self.buffered_dir = 0
         return
     end
 
-    if btn(0) then
-        self.buffered_dir = 0
-        self.input_buffered = true
-    elseif btn(1) then
-        self.buffered_dir = 1
-        self.input_buffered = true
-    elseif btn(2) then
-        self.buffered_dir = 2
-        self.input_buffered = true
-    elseif btn(3) then
-        self.buffered_dir = 3
-        self.input_buffered = true
-    else
-        self.input_buffered = false
+    for i = 0, 3 do
+        if btn(i) then
+            self.buffered_dir = i
+            self.input_buffered = true
+            return
+        end
     end
+
+    self.input_buffered = false
 end
 
 function Player:update()
@@ -134,7 +125,7 @@ function Player:update()
         self:handle_input()
     end
 
-    if is_player_visible(self) then
+    if Game:should_render_player() then
         self:update_bounce()
     end
 end
@@ -196,40 +187,29 @@ function Player:update_bounce()
         return
     end
 
-    if not p.bounce_timer then
-        p.bounce_timer = 0
-    end
-
-    -- stop bounce animation increment if falling
-    if not p.falling then
-        p.bounce_timer += 0.033
-        if p.bounce_timer >= 1 then
-            p.bounce_timer = 0
-        end
-    end
+    -- ensure bounce timer exists and advance it
+    p.bounce_timer = (p.bounce_timer or 0) + 0.033
+    if p.bounce_timer >= 1 then p.bounce_timer -= 1 end
 
     local t = p.bounce_timer
     local bounce = sin(t * 0.5)
 
-    -- detect jump peak for input (bounce near maximum)
-    if not p.moving and not p.falling then
-        -- jump peak: t from 0.2 to 0.3 (peak of sinusoid)
+    -- handle buffered input at bounce peak window
+    if not p.moving then
         if t > 0.2 and t < 0.3 and not p.can_move then
             p.can_move = true
-
-            -- execute move if input is buffered
             if p.input_buffered then
                 local nx, ny = p.grid_x, p.grid_y
                 if p.buffered_dir == 0 then
-                    nx = p.grid_x - 1
+                    nx = nx - 1
                 elseif p.buffered_dir == 1 then
-                    nx = p.grid_x + 1
+                    nx = nx + 1
                 elseif p.buffered_dir == 2 then
-                    ny = p.grid_y - 1
+                    ny = ny - 1
                 elseif p.buffered_dir == 3 then
-                    ny = p.grid_y + 1
+                    ny = ny + 1
                 end
-                -- start animated movement
+
                 p.old_x = p.grid_x
                 p.old_y = p.grid_y
                 p.grid_x = nx
@@ -237,113 +217,74 @@ function Player:update_bounce()
                 p.moving = true
                 p.move_timer = 0
                 p.can_move = false
-
-                -- create trail from start to end position
-                ParticleSystem:create_trail(p.old_x, p.old_y, nx, ny)
+                -- trail only for teleport moves; normal moves shouldn't create trail here
             end
         end
 
-        -- reset can_move when t returns to 0 (prepare for next jump)
-        if t < 0.1 or t > 0.9 then
-            p.can_move = false
-        end
+        if t < 0.1 or t > 0.9 then p.can_move = false end
     end
 
     p.prev_bounce = bounce
 
     -- ball size: small (4) to large (16) and back
-    local min_size = 4
-    local max_size = 16
+    local min_size, max_size = 4, 16
     local zoom_factor = bounce * bounce
     p.w = min_size + (max_size - min_size) * zoom_factor
 
     -- detect moment of touching tile (smallest size) and hit tile
-    if not p.moving and not p.falling then
+    if not p.moving then
         local prev_size = p.prev_size or min_size
-        -- ball reached smallest size (tile touch)
-        if prev_size > min_size and p.w <= min_size then
+        -- robust touch detection: previous size was larger than current and current is near minimum
+        local touched = (prev_size > p.w) and (p.w <= (min_size + 0.5))
+        if touched then
             if p.can_hit then
                 local tile = Map:get(p.grid_x, p.grid_y)
                 if tile == 0 then
                     if not Game.immortal then
-                        -- empty tile - start falling
-                        p.falling = true
-                        p.fall_timer = 0
+                        p.falling = true p.fall_timer = 0
                     else
                         sfx(11)
                     end
                 else
-                    -- teleport tile - hit it and start teleport animation
-                    if tile >= 7 and tile <= 14 then
-                        sfx(11)
+                    local meta = tile_meta[tile]
+                    local off = meta and meta.offset
+                    if off then
                         Map:hit_tile(p.grid_x, p.grid_y)
-                        local nx2, ny2 = p.grid_x, p.grid_y
-                        if tile == 10 then
-                            nx2 = p.grid_x - 2 -- left (2 tiles)
-                        elseif tile == 8 then
-                            nx2 = p.grid_x + 2 -- right (2 tiles)
-                        elseif tile == 9 then
-                            ny2 = p.grid_y + 2 -- down (2 tiles)
-                        elseif tile == 7 then
-                            ny2 = p.grid_y - 2 -- up (2 tiles)
-                        elseif tile == 14 then
-                            nx2, ny2 = p.grid_x - 1, p.grid_y - 1 -- up-left (diag)
-                        elseif tile == 11 then
-                            nx2, ny2 = p.grid_x + 1, p.grid_y - 1 -- up-right (diag)
-                        elseif tile == 13 then
-                            nx2, ny2 = p.grid_x - 1, p.grid_y + 1 -- down-left (diag)
-                        elseif tile == 12 then
-                            nx2, ny2 = p.grid_x + 1, p.grid_y + 1 -- down-right (diag)
-                        end
-
+                        local nx2 = p.grid_x + off[1]
+                        local ny2 = p.grid_y + off[2]
                         p.old_x = p.grid_x
                         p.old_y = p.grid_y
                         p.grid_x = nx2
                         p.grid_y = ny2
                         p.moving = true
                         p.move_timer = 0
-
                         ParticleSystem:create_trail(p.old_x, p.old_y, nx2, ny2)
-
-                        -- block until next cycle and reset peak
                         p.can_hit = false
                         p.reached_peak = false
                     else
-                        -- normal tile - hit it with bounce sound
-                        sfx(11)
                         Map:hit_tile(p.grid_x, p.grid_y)
-                        -- block until next cycle and reset peak
                         p.can_hit = false
                         p.reached_peak = false
+                        sfx(11)
                     end
                 end
-            else
-                -- can't hit but still bouncing - play sound
-                sfx(11)
             end
         end
-        -- track if ball reached peak (large size > 14)
-        if p.w > 14 and not p.can_hit and not p.reached_peak then
-            p.reached_peak = true
-        end
-        -- allow hitting only when ball passed peak and returns down
-        if p.reached_peak and p.w < 6 then
-            p.can_hit = true
-            p.reached_peak = false
-        end
 
+        if p.w > 14 and not p.can_hit and not p.reached_peak then p.reached_peak = true end
+        if p.reached_peak and p.w < 6 then
+            p.can_hit = true p.reached_peak = false
+        end
         p.prev_size = p.w
     end
-    -- Y axis movement: ball always above tile
-    -- in lower phase -2, in upper phase -10 (8px difference)
+
     p.offset_y = -1.5 - bounce * 5
 end
 
 function Player:update_spawn()
     local p = self
 
-    -- if spawn was deferred until player is visible, start it now
-    if p.pending_spawn and is_player_visible(p) then
+    if p.pending_spawn and Game:should_render_player() then
         p.pending_spawn = false
         p.spawning = true
         p.spawn_timer = 0
@@ -449,30 +390,32 @@ function Player:draw()
     end
 
     local s_draw = s * spawn_prog
+
     if s_draw > 0.5 then
-        draw_ball(px, ball_y, s_draw)
+        local highlight_size = max(1.5, s_draw * 0.45)
+        local highlight_offset = s_draw * 0.35
+
+        circfill(px, ball_y, s_draw + 1, 0)
+        circfill(px, ball_y, s_draw, 8)
+        circfill(px + 1, ball_y + s_draw * 0.25, s_draw * 0.7, 2)
+        circfill(px + 1 - s_draw * 0.1, ball_y - s_draw * 0.1, s_draw * 0.7, 14)
+        circfill(px - highlight_offset, ball_y - highlight_offset, highlight_size, 7)
+
+        if s_draw > 2 then
+            circfill(px - highlight_offset * 1.1, ball_y - highlight_offset * 1.1, highlight_size * 0.6, 7)
+        end
+
+        if s_draw > 2.5 then
+            local sparkle_size = max(0.5, s_draw * 0.15)
+            circfill(px - s_draw * 0.5, ball_y - s_draw * 0.5, sparkle_size, 7)
+            pset(px - s_draw * 0.5, ball_y - s_draw * 0.5, 7)
+        end
     end
 end
 
-function draw_ball(px, ball_y, s)
-    local highlight_size = max(1.5, s * 0.45)
-    local highlight_offset = s * 0.35
-
-    circfill(px, ball_y, s + 1, 0)
-    circfill(px, ball_y, s, 8)
-    circfill(px + 1, ball_y + s * 0.25, s * 0.7, 2)
-    circfill(px + 1 - s * 0.1, ball_y - s * 0.1, s * 0.7, 14)
-    circfill(px - highlight_offset, ball_y - highlight_offset, highlight_size, 7)
-
-    if s > 2 then
-        circfill(px - highlight_offset * 1.1, ball_y - highlight_offset * 1.1, highlight_size * 0.6, 7)
-    end
-
-    if s > 2.5 then
-        local sparkle_size = max(0.5, s * 0.15)
-        circfill(px - s * 0.5, ball_y - s * 0.5, sparkle_size, 7)
-        pset(px - s * 0.5, ball_y - s * 0.5, 7)
-    end
+function Player:is_drawn()
+    local s = (self.w or 0) / 1.8
+    return s > 0.5
 end
 
 -->8
@@ -504,11 +447,11 @@ function Map:set(x, y, v)
 end
 
 function Map:count_tiles()
-    --@todo: optimize tile counting (use lookup table or a small helper to test destructible/teleport ranges)
     local count = 0
-    for i = 1, self.width * self.height do
+    local total = self.width * self.height
+    for i = 1, total do
         local v = self.current_map[i]
-        if v == 1 or v == 2 or v == 3 or (v >= 7 and v <= 14) then
+        if Game.tile_count_lookup and Game.tile_count_lookup[v] then
             count += 1
         end
     end
@@ -601,12 +544,6 @@ function Camera:trigger_shake()
     self.shake_intensity = 2
 end
 
-function Camera:update_shake()
-    if self.shake_timer > 0 then
-        self.shake_timer -= 1
-    end
-end
-
 function Camera:get_shake()
     if self.shake_timer > 0 then
         local sx = rnd(self.shake_intensity) - self.shake_intensity / 2
@@ -619,6 +556,10 @@ end
 function Camera:update()
     local target_x = self.x
     local target_y = self.y
+
+    if self.shake_timer > 0 then
+        self.shake_timer -= 1
+    end
 
     if not Game.level_transition and Game.player then
         local on_left = (Game.player.grid_x == 0)
@@ -691,6 +632,321 @@ UIManager = {
     tile_flash_duration = 0.06
 }
 
+function UIManager:reset()
+    self.title_fade = 0
+    self.title_bounce_done = false
+    self.tile_respawn_anims = {}
+    self.tile_respawn_active = false
+    self.title_drop_y = -40
+    self.title_drop_vy = 0
+    self.title_bounce_done = false
+    self.title_anim_timer = 0
+end
+
+function UIManager:draw_tile_with_anim(tile, x, y)
+    local draw_tile = tile == 4 and 42 or tile
+
+    local function draw_tile_sprite(base_sprite, x, y)
+        spr(base_sprite, x, y)
+        spr(base_sprite + 1, x + 8, y)
+        spr(base_sprite + 16, x, y + 8)
+        spr(base_sprite + 17, x + 8, y + 8)
+    end
+
+    if draw_tile >= 7 and draw_tile <= 14 then
+        local bg_tile = (draw_tile >= 11 and draw_tile <= 14) and teleport2_bg_sprite or teleport1_bg_sprite
+        draw_tile_sprite(bg_tile, x, y)
+        local icon_sprite = get_teleport_anim_sprite(draw_tile)
+        spr(icon_sprite, x + 4, y + 3)
+    else
+        draw_tile_sprite(map_tile_to_sprite(draw_tile), x, y)
+    end
+
+    -- draw flash overlay if applicable
+    local tx = flr(x / Map.tile_size)
+    local ay = 4
+    local ty = flr((y - ay) / Map.tile_size)
+    local f = self:get_flash_at(tx, ty)
+    if f then
+        local base_sprite = map_tile_to_sprite(draw_tile)
+        local src_x = (base_sprite % 16) * 8
+        local src_y = flr(base_sprite / 16) * 8
+
+        local ssrc_x = src_x
+        local ssrc_y = src_y
+
+        for c = 1, 15 do
+            pal(c, 7)
+        end
+
+        sspr(ssrc_x, ssrc_y, Map.tile_size, Map.tile_size, x, y, Map.tile_size, Map.tile_size)
+
+        -- if draw_tile >= 7 and draw_tile <= 14 then
+        --     local icon_sprite = get_teleport_anim_sprite(draw_tile)
+        --     sspr((icon_sprite % 16) * 8, flr(icon_sprite / 16) * 8, 8, 8, x + 4, y + 4, 8, 8)
+        -- end
+
+        pal()
+    end
+end
+
+function UIManager:draw_gui()
+    rectfill(0, 0, 128, 9, 0)
+    spr(128, 96, 1)
+
+    local display_level = (Game.level_transition and Game.next_level) or Game.current_level
+    local level_text = "level " .. display_level
+    print(level_text, 2, 3, 1)
+    print(level_text, 2, 2, 6)
+
+    local time_text = (Game.level_transition and "00:00") or format_time(Game.level_time)
+    local time_width = #time_text * 4
+    print(time_text, 128 - time_width - 2, 3, 1)
+    print(time_text, 128 - time_width - 2, 2, 6)
+end
+
+function UIManager:draw_title_screen()
+    local title_x, title_y = 33, 26
+    local menu_x, menu_y = 64, title_y + 46
+    local menu_spacing = 9
+    local pulse = sin(Game.t * 2) * 0.5 + 0.5
+
+    if self.title_bounce_done then
+        rectfill(14, 14, 112, 112, 0)
+        self:draw_background()
+    else
+        cls()
+    end
+
+    self.title_anim_timer = (self.title_anim_timer or 0) + 1 / 30
+
+    if not self.show_leaderboard then
+        rectfill(20, 20, 106, 106, 0)
+        self.title_fade = mid(0, (self.title_fade or 0) + 0.05, 2)
+        if self.title_bounce_done == nil then self.title_bounce_done = false end
+        if not self.title_bounce_done then
+            self.title_drop_vy = (self.title_drop_vy or 0) + 0.9 -- gravity
+            self.title_drop_y = (self.title_drop_y or -40) + self.title_drop_vy
+            if self.title_drop_y >= 0 then
+                self.title_drop_y = 0
+                self.title_drop_vy = -self.title_drop_vy * 0.45 -- bounce with damping
+                if abs(self.title_drop_vy) < 0.6 then
+                    self.title_drop_vy = 0
+                    self.title_bounce_done = true
+                end
+            end
+        end
+        local cur_y = title_y + (self.title_drop_y or 0)
+        if self.title_fade < 1 then
+            if self.title_fade < 0.33 then
+                for c = 1, 15 do
+                    pal(c, 0)
+                end
+            elseif self.title_fade < 0.66 then
+                for c = 1, 15 do
+                    pal(c, (c == 8 or c == 2 or c == 1) and 0 or 1)
+                end
+            elseif self.title_fade < 0.77 then
+                for c = 1, 15 do
+                    pal(c, 12)
+                end
+            else
+                for c = 1, 15 do
+                    pal(c, c)
+                end
+            end
+        end
+
+        for i = 0, 7 do
+            spr(136 + i, title_x + i * 8, cur_y)
+            spr(152 + i, title_x + i * 8, cur_y + 8)
+            spr(168 + i, title_x + i * 8, cur_y + 16)
+            spr(184 + i, title_x + i * 8, cur_y + 24)
+        end
+
+        pal()
+
+        if self.title_bounce_done then
+            local delay, flash_dur = 0.6, 0.8
+            if self.title_anim_timer >= delay then
+                rect(20, 20, 106, 106, self.title_anim_timer >= 0.75 and 1 or 0)
+                local ft = self.title_anim_timer - delay
+                if ft < flash_dur then
+                    local pulse = sin(Game.t * 20)
+                    local col = pulse > 0 and 7 or 10
+                    print_centered("BOUNCING", cur_y - 8, col, 4)
+                    print_centered("BY PRAgHUS", cur_y + 33, col, 4)
+                else
+                    print_centered("BOUNCING", cur_y - 8, 10, 4)
+                    print_centered("BY PRAgHUS", cur_y + 33, 10, 4)
+                end
+            end
+            print("V1.1", 110, 120, 6)
+
+            if not self.title_menu_index then self.title_menu_index = 1 end
+            local items = {
+                "start",
+                (Game.music_on and "music: on" or "music: off"),
+                "best times"
+            }
+            if self.title_anim_timer >= 0.6 then
+                for i = 1, #items do
+                    local yy = menu_y + (i - 1) * menu_spacing
+                    if i == self.title_menu_index and self.title_anim_timer >= 1.1 then
+                        rectfill(menu_x - 32, yy - 2, menu_x + 32, yy + 6, self.title_anim_timer >= 1.2 and 8 or 2)
+                        print_centered(items[i], yy, 7)
+                    else
+                        print_centered(items[i], yy, self.title_anim_timer >= 0.7 and 6 or 1)
+                    end
+                end
+            end
+        end
+    end
+
+    if self.leaderboard_anim > 0 then
+        self:draw_leaderboard()
+    end
+end
+
+function UIManager:draw_leaderboard()
+    local board_width = 100
+    local board_height = 100
+    local board_x = (128 - board_width) / 2
+    local board_y = (128 - board_height) / 2 - (board_height * (1 - UIManager.leaderboard_anim))
+    local k = flr(2 * cos(Game.t * 4))
+
+    rectfill(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 0)
+    rect(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 1)
+
+    local col_width = board_width / 2
+    local start_x1 = board_x + 8
+    local start_x2 = board_x + col_width + 8
+    local start_y = board_y + 20
+    local row_height = 8
+    local levels_per_column = 8
+
+    local total_levels = #Game.levels
+    local max_display = min(total_levels, levels_per_column * 2)
+    local bt = Game.best_times
+
+    for i = 1, max_display do
+        local col = 1
+        local row_index = i
+        local x = start_x1
+
+        if i > levels_per_column then
+            col = 2
+            row_index = i - levels_per_column
+            x = start_x2
+        end
+
+        local y_pos = start_y + (row_index - 1) * row_height
+
+        print(tostring(i), x, y_pos, 6)
+
+        local value = bt[i]
+        if value then
+            print(format_time(value), x + 12, y_pos, 11)
+        else
+            print("--:--", x + 12, y_pos, 5)
+        end
+    end
+
+    print_centered("\x8e+\x97 reset records", board_y + 8, 9, 1)
+    print_centered("press \x97 to close", board_y + board_height - 12, 6, 1)
+end
+
+function UIManager:draw_background()
+    rectfill(16 - Camera.x, 16 - Camera.y, 114 - Camera.x, 116 - Camera.y, 0)
+    for i = 0, 999 do
+        local x, y = rnd(128), rnd(128)
+        local c = pget(x, y)
+        local plt = Game.game_state == "title" and palette[0] or palette[Game.current_level % #palette + 1]
+        local a = atan2(x - 64, y - 64)
+        if plt[c] then
+            if rnd(1.1) >= 1 then
+                c = plt[c]
+            end
+        else
+            c = 0
+        end
+        circfill(x + 2 * cos(a), y + 2 * sin(a), 1, c)
+    end
+end
+
+function UIManager:draw_messages()
+    local pulse = sin(Game.t * 4) * 0.5 + 0.5
+    local color = 7 + flr(pulse * 3)
+
+    if Game.level_cleared and Game.level_cleared_timer < 5 then
+        local time_text = "time: " .. format_time(Game.level_time)
+        local text1 = "level cleared!"
+        local best_time = Game.best_times[Game.current_level]
+        local best_text = ""
+        if best_time then
+            best_text = "best: " .. format_time(best_time)
+            width3 = #best_text * 4
+        end
+
+        local box_height = best_time and 78 or 70
+        rectfill(0, 50, 128, box_height, 0)
+
+        print_centered(text1, 54, color)
+        print_centered(time_text, 62, 7)
+
+        if best_time then
+            print_centered(best_text, 70, 6)
+        end
+    elseif Game.game_state == "won" then
+        rectfill(0, 50, 128, 70, 0)
+        print_centered("all levels complete!", 54, 11)
+        print_centered("press \x97 to restart", 62, 7)
+    elseif Game.game_state == "lost" then
+        rectfill(0, 0, 128, 8, 1)
+        print_centered("press \x8e+<> to level skip", 2, 6, 0)
+        print_centered("press \x97 to restart", 20, color, 0)
+    end
+    self:draw_flash_animation()
+end
+
+function UIManager:trigger_flash_animation(y_offset, text)
+    if self.record_anim_stage > 0 then return end
+    self.record_anim_stage = 1
+    self.record_anim_timer = 0
+    self.record_anim_x = 128
+    self.record_anim_height = 1
+    self.record_anim_y_center = y_offset or 64
+    self.record_anim_width = 128
+    self.record_anim_text = text or ""
+end
+
+function UIManager:draw_flash_animation()
+    if self.record_anim_stage == 0 then return end
+
+    local y_center = self.record_anim_y_center or 64
+    local y_pos = y_center - self.record_anim_height / 2
+    local rect_color = 7
+
+    if self.record_anim_stage == 3 then
+        rect_color = 0
+    end
+
+    rectfill(self.record_anim_x, y_pos, self.record_anim_x + self.record_anim_width - 1, y_pos + self.record_anim_height - 1, rect_color)
+
+    if self.record_anim_stage == 3 then
+        local text = self.record_anim_text
+        local text_width = #text * 4
+        local text_y = y_center - 3 -- center text vertically
+
+        if self.record_anim_height >= 8 and self.record_anim_width >= text_width then
+            local pulse = sin(Game.t * 8) * 3 + 3 -- cycles through colors 0-6
+            local color = flr(pulse) + 8 -- colors 8-14 (bright colors)
+            if color > 14 then color = 8 + (color - 15) end
+            print_centered(text, text_y, color)
+        end
+    end
+end
+
 function UIManager:setup_tile_respawn_animations(old_map)
     self.tile_respawn_anims = {}
     self.tile_respawn_active = false
@@ -725,7 +981,6 @@ end
 
 function UIManager:update_level_transition()
     Camera:reset()
-
     if Game.level_transition_phase == "slide" then
         Game.level_transition_offset = damp(Game.level_transition_offset, 128 * Game.level_transition_direction, 0.8)
         if abs(Game.level_transition_offset - 128 * Game.level_transition_direction) < 32 then
@@ -794,7 +1049,6 @@ function UIManager:update_level_transition()
 end
 
 function UIManager:update_common_effects()
-    if Camera then Camera:update_shake() end
     if self.progress_flash > 0 then
         self.progress_flash -= 0.32
         if self.progress_flash < 0 then self.progress_flash = 0 end
@@ -884,67 +1138,51 @@ function UIManager:update_tile_flashes()
     end
 end
 
-function UIManager:reset()
-    self.title_fade = 0
-    self.title_bounce_done = false
-    self.tile_respawn_anims = {}
-    self.tile_respawn_active = false
-    self.title_drop_y = -40
-    self.title_drop_vy = 0
-    self.title_bounce_done = false
-    self.title_anim_timer = 0
-end
-
 function UIManager:update_flash_animation()
     if self.record_anim_stage == 0 then return end
-
     self.record_anim_timer += 0.08
+
+    local p = min(1, self.record_anim_timer)
+
+    local function advance_to(next_stage)
+        self.record_anim_stage = next_stage
+        self.record_anim_timer = 0
+    end
+
+    if self.record_anim_x == nil then self.record_anim_x = 128 end
+    if self.record_anim_width == nil then self.record_anim_width = 128 end
+    if self.record_anim_height == nil then self.record_anim_height = 1 end
 
     if self.record_anim_stage == 1 then
         self.record_anim_height = 1
         self.record_anim_width = 128
-        self.record_anim_x = damp(0, 128, min(1, self.record_anim_timer)) -- slide from right to left
+        self.record_anim_x = damp(0, self.record_anim_x, p) -- slide from right to left
 
-        if self.record_anim_timer >= 0.5 then
-            self.record_anim_stage = 2
-            self.record_anim_timer = 0
-        end
+        if self.record_anim_timer >= 0.5 then advance_to(2) end
     elseif self.record_anim_stage == 2 then
         self.record_anim_x = 0
         self.record_anim_width = 128
-        self.record_anim_height = damp(16, 1, min(1, self.record_anim_timer))
+        self.record_anim_height = damp(16, self.record_anim_height, p)
 
-        if self.record_anim_timer >= 0.3 then
-            self.record_anim_stage = 3
-            self.record_anim_timer = 0
-        end
+        if self.record_anim_timer >= 0.3 then advance_to(3) end
     elseif self.record_anim_stage == 3 then
         self.record_anim_x = 0
         self.record_anim_width = 128
         self.record_anim_height = 11
 
-        if self.record_anim_timer >= 2 then
-            self.record_anim_stage = 4
-            self.record_anim_timer = 0
-        end
+        if self.record_anim_timer >= 2 then advance_to(4) end
     elseif self.record_anim_stage == 4 then
         self.record_anim_x = 0
         self.record_anim_width = 128
-        self.record_anim_height = damp(1, 16, min(1, self.record_anim_timer))
+        self.record_anim_height = damp(1, self.record_anim_height, p)
 
-        if self.record_anim_timer >= 0.5 then
-            self.record_anim_stage = 5
-            self.record_anim_timer = 0
-        end
+        if self.record_anim_timer >= 0.5 then advance_to(5) end
     elseif self.record_anim_stage == 5 then
         self.record_anim_x = 0
         self.record_anim_height = 1
-        self.record_anim_width = damp(0, 128, min(1, self.record_anim_timer))
+        self.record_anim_width = damp(0, self.record_anim_width, p)
 
-        if self.record_anim_timer >= 0.5 then
-            self.record_anim_stage = 0
-            self.record_anim_timer = 0
-        end
+        if self.record_anim_timer >= 0.5 then advance_to(0) end
     end
 end
 
@@ -967,22 +1205,23 @@ function UIManager:get_flash_at(x, y)
 end
 
 -->8
--- CORE GAME STATE ------------------------------------------------------------
+-- CORE GAME STATE
+-------------------------------------------------------------------------------
 Game = {
     t = 0,
     music_on = false,
     game_state = "title", -- "title", "playing", "won", "lost"
     immortal = false, -- debug mode to prevent falling off
     levels = {},
+    best_times = {}, -- stores best time for each level
     level_transition_phase = nil,
     level_transition_offset = 0,
     level_transition_direction = 0,
     level_transition_new_anims = {},
     level_transition_started = false,
     level_transition = false,
-    next_level = 1,
-    current_level = 3,
-    best_times = {} -- stores best time for each level
+    current_level = 1,
+    next_level = 1
 }
 
 function Game:init()
@@ -994,8 +1233,17 @@ function Game:init()
     menuitem(1, "music: " .. (Game.music_on and "on" or "off"), function() Game:toggle_music() end)
     menuitem(2, "back to title", function() Game:restart() end)
 
-    Map:load_levels_from_native_map()
-    ParticleSystem:clear()
+    -- initialize tile count lookup table for quick destructible/teleport checks
+    self.tile_count_lookup = {}
+    for i = 0, 255 do
+        self.tile_count_lookup[i] = false
+    end
+    self.tile_count_lookup[1] = true
+    self.tile_count_lookup[2] = true
+    self.tile_count_lookup[3] = true
+    for t = 7, 14 do
+        self.tile_count_lookup[t] = true
+    end
 
     if self.player then
         self.player:set_position(Map.start_x, Map.start_y)
@@ -1006,6 +1254,9 @@ function Game:init()
         self.player.input_buffered = false
         self.player.buffered_dir = 0
     end
+
+    Map:load_levels_from_native_map()
+    ParticleSystem:clear()
 end
 
 function Game:set_state(s)
@@ -1025,7 +1276,6 @@ end
 
 function Game:update()
     self.t += 0.01
-    UIManager:update_common_effects()
     if self.game_state == "title" then
         UIManager:update_title_state()
     elseif self.game_state == "playing" then
@@ -1035,6 +1285,7 @@ function Game:update()
     elseif self.game_state == "lost" then
         self:update_lost_state()
     end
+    UIManager:update_common_effects()
 end
 
 function Game:draw()
@@ -1051,7 +1302,7 @@ function Game:draw()
     Map:draw()
     ParticleSystem:draw(false)
 
-    if is_player_visible(self.player) then
+    if self:should_render_player() then
         self.player:draw()
     end
 
@@ -1062,6 +1313,10 @@ function Game:draw()
     if not self.level_transition then
         UIManager:draw_messages()
     end
+end
+
+function Game:should_render_player()
+    return self.player and not self.level_cleared and not self.level_transition and not self:is_showing_messages() and self.player:is_drawn()
 end
 
 function Game:update_playing_state()
@@ -1116,14 +1371,8 @@ end
 
 function Game:save_best_times()
     for i = 1, min(#self.levels, 63) do
-        -- dget/dset supports indices 0-63, save 0 for metadata
-        if self.best_times[i] then
-            dset(i, self.best_times[i])
-        else
-            dset(i, -1) -- use -1 to indicate no time set
-        end
+        dset(i, self.best_times[i] or -1)
     end
-    -- save number of levels in slot 0 as metadata
     dset(0, #self.levels)
 end
 
@@ -1308,7 +1557,7 @@ function ParticleSystem:create_particle(x, y, col, vx, vy, life, is_trail, is_re
     if #self.particles >= self.max_particles then
         return
     end
-    --@todo: when at capacity, consider dropping oldest particle instead of silently skipping
+
     add(self.particles, p)
 end
 
@@ -1531,311 +1780,6 @@ function Map:finalize_tile_removal(f)
 end
 
 ---------------------------------------------------------------
-function UIManager:draw_tile_with_anim(tile, x, y)
-    local draw_tile = tile == 4 and 42 or tile
-
-    local function draw_tile_sprite(base_sprite, x, y)
-        spr(base_sprite, x, y)
-        spr(base_sprite + 1, x + 8, y)
-        spr(base_sprite + 16, x, y + 8)
-        spr(base_sprite + 17, x + 8, y + 8)
-    end
-
-    if draw_tile >= 7 and draw_tile <= 14 then
-        local bg_tile = (draw_tile >= 11 and draw_tile <= 14) and teleport2_bg_sprite or teleport1_bg_sprite
-        draw_tile_sprite(bg_tile, x, y)
-        local icon_sprite = get_teleport_anim_sprite(draw_tile)
-        spr(icon_sprite, x + 4, y + 3)
-    else
-        draw_tile_sprite(map_tile_to_sprite(draw_tile), x, y)
-    end
-
-    -- draw flash overlay if applicable
-    local tx = flr(x / Map.tile_size)
-    local ay = 4
-    local ty = flr((y - ay) / Map.tile_size)
-    local f = self:get_flash_at(tx, ty)
-    if f then
-        local base_sprite = map_tile_to_sprite(draw_tile)
-        local src_x = (base_sprite % 16) * 8
-        local src_y = flr(base_sprite / 16) * 8
-
-        local ssrc_x = src_x
-        local ssrc_y = src_y
-
-        for c = 1, 15 do
-            pal(c, 7)
-        end
-
-        sspr(ssrc_x, ssrc_y, Map.tile_size, Map.tile_size, x, y, Map.tile_size, Map.tile_size)
-
-        -- if draw_tile >= 7 and draw_tile <= 14 then
-        --     local icon_sprite = get_teleport_anim_sprite(draw_tile)
-        --     sspr((icon_sprite % 16) * 8, flr(icon_sprite / 16) * 8, 8, 8, x + 4, y + 4, 8, 8)
-        -- end
-
-        pal()
-    end
-end
-
-function UIManager:draw_gui()
-    rectfill(0, 0, 128, 9, 0)
-    spr(128, 96, 1)
-
-    local display_level = (Game.level_transition and Game.next_level) or Game.current_level
-    local level_text = "level " .. display_level
-    print(level_text, 2, 3, 1)
-    print(level_text, 2, 2, 6)
-
-    local time_text = (Game.level_transition and "00:00") or format_time(Game.level_time)
-    local time_width = #time_text * 4
-    print(time_text, 128 - time_width - 2, 3, 1)
-    print(time_text, 128 - time_width - 2, 2, 6)
-end
-
-function UIManager:draw_title_screen()
-    local title_x, title_y = 33, 26
-    local menu_x, menu_y = 64, title_y + 46
-    local menu_spacing = 9
-    local pulse = sin(Game.t * 2) * 0.5 + 0.5
-
-    if self.title_bounce_done then
-        rectfill(14, 14, 112, 112, 0)
-        self:draw_background()
-    else
-        cls()
-    end
-
-    self.title_anim_timer = (self.title_anim_timer or 0) + 1 / 30
-
-    if not self.show_leaderboard then
-        rectfill(20, 20, 106, 106, 0)
-        self.title_fade = mid(0, (self.title_fade or 0) + 0.05, 2)
-        if self.title_bounce_done == nil then self.title_bounce_done = false end
-        if not self.title_bounce_done then
-            self.title_drop_vy = (self.title_drop_vy or 0) + 0.9 -- gravity
-            self.title_drop_y = (self.title_drop_y or -40) + self.title_drop_vy
-            if self.title_drop_y >= 0 then
-                self.title_drop_y = 0
-                self.title_drop_vy = -self.title_drop_vy * 0.45 -- bounce with damping
-                if abs(self.title_drop_vy) < 0.6 then
-                    self.title_drop_vy = 0
-                    self.title_bounce_done = true
-                end
-            end
-        end
-        local cur_y = title_y + (self.title_drop_y or 0)
-        if self.title_fade < 1 then
-            if self.title_fade < 0.33 then
-                for c = 1, 15 do
-                    pal(c, 0)
-                end
-            elseif self.title_fade < 0.66 then
-                for c = 1, 15 do
-                    pal(c, (c == 8 or c == 2 or c == 1) and 0 or 1)
-                end
-            elseif self.title_fade < 0.77 then
-                for c = 1, 15 do
-                    pal(c, 12)
-                end
-            else
-                for c = 1, 15 do
-                    pal(c, c)
-                end
-            end
-        end
-
-        for i = 0, 7 do
-            spr(136 + i, title_x + i * 8, cur_y)
-            spr(152 + i, title_x + i * 8, cur_y + 8)
-            spr(168 + i, title_x + i * 8, cur_y + 16)
-            spr(184 + i, title_x + i * 8, cur_y + 24)
-        end
-
-        pal()
-
-        if self.title_bounce_done then
-            local delay, flash_dur = 0.6, 0.8
-            if self.title_anim_timer >= delay then
-                rect(20, 20, 106, 106, self.title_anim_timer >= 0.75 and 1 or 0)
-                local ft = self.title_anim_timer - delay
-                if ft < flash_dur then
-                    local pulse = sin(Game.t * 20)
-                    local col = pulse > 0 and 7 or 10
-                    print_centered("BOUNCING", cur_y - 8, col, 4)
-                    print_centered("BY PRAgHUS", cur_y + 33, col, 4)
-                else
-                    print_centered("BOUNCING", cur_y - 8, 10, 4)
-                    print_centered("BY PRAgHUS", cur_y + 33, 10, 4)
-                end
-            end
-            print("V1.1", 110, 120, 6)
-
-            if not self.title_menu_index then self.title_menu_index = 1 end
-            local items = {
-                "start",
-                (Game.music_on and "music: on" or "music: off"),
-                "best times"
-            }
-            if self.title_anim_timer >= 0.6 then
-                for i = 1, #items do
-                    local yy = menu_y + (i - 1) * menu_spacing
-                    if i == self.title_menu_index and self.title_anim_timer >= 1.1 then
-                        rectfill(menu_x - 32, yy - 2, menu_x + 32, yy + 6, self.title_anim_timer >= 1.2 and 8 or 2)
-                        print_centered(items[i], yy, 7)
-                    else
-                        print_centered(items[i], yy, self.title_anim_timer >= 0.7 and 6 or 1)
-                    end
-                end
-            end
-        end
-    end
-
-    if self.leaderboard_anim > 0 then
-        self:draw_leaderboard()
-    end
-end
-
-function UIManager:draw_leaderboard()
-    local board_width = 100
-    local board_height = 100
-    local board_x = (128 - board_width) / 2
-    local board_y = (128 - board_height) / 2 - (board_height * (1 - UIManager.leaderboard_anim))
-    local k = flr(2 * cos(Game.t * 4))
-
-    rectfill(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 0)
-    rect(board_x + k, board_y + k, board_x + board_width + 0.9999 - k, board_y + board_height + 0.9999 - k, 1)
-
-    local col_width = board_width / 2
-    local start_x1 = board_x + 8
-    local start_x2 = board_x + col_width + 8
-    local start_y = board_y + 20
-    local row_height = 8
-    local levels_per_column = 8
-
-    local total_levels = #Game.levels
-    local max_display = min(total_levels, levels_per_column * 2)
-    local bt = Game.best_times
-
-    for i = 1, max_display do
-        local col = 1
-        local row_index = i
-        local x = start_x1
-
-        if i > levels_per_column then
-            col = 2
-            row_index = i - levels_per_column
-            x = start_x2
-        end
-
-        local y_pos = start_y + (row_index - 1) * row_height
-
-        print(tostring(i), x, y_pos, 6)
-
-        local value = bt[i]
-        if value then
-            print(format_time(value), x + 12, y_pos, 11)
-        else
-            print("--:--", x + 12, y_pos, 5)
-        end
-    end
-
-    print_centered("\x8e+\x97 reset records", board_y + 8, 9, 1)
-    print_centered("press \x97 to close", board_y + board_height - 12, 6, 1)
-end
-
-function UIManager:draw_background()
-    --@todo: expensive per-frame work (loop 0..999). Consider caching star positions
-    --@todo: reduce iteration count or precompute background to improve FPS on low-end targets
-    rectfill(16 - Camera.x, 16 - Camera.y, 114 - Camera.x, 116 - Camera.y, 0)
-    for i = 0, 999 do
-        local x, y = rnd(128), rnd(128)
-        local c = pget(x, y)
-        local plt = Game.game_state == "title" and palette[0] or palette[Game.current_level % #palette + 1]
-        local a = atan2(x - 64, y - 64)
-        if plt[c] then
-            if rnd(1.1) >= 1 then
-                c = plt[c]
-            end
-        else
-            c = 0
-        end
-        circfill(x + 2 * cos(a), y + 2 * sin(a), 1, c)
-    end
-end
-
-function UIManager:draw_messages()
-    local pulse = sin(Game.t * 4) * 0.5 + 0.5
-    local color = 7 + flr(pulse * 3)
-
-    if Game.level_cleared and Game.level_cleared_timer < 5 then
-        local time_text = "time: " .. format_time(Game.level_time)
-        local text1 = "level cleared!"
-        local best_time = Game.best_times[Game.current_level]
-        local best_text = ""
-        if best_time then
-            best_text = "best: " .. format_time(best_time)
-            width3 = #best_text * 4
-        end
-
-        local box_height = best_time and 78 or 70
-        rectfill(0, 50, 128, box_height, 0)
-
-        print_centered(text1, 54, color)
-        print_centered(time_text, 62, 7)
-
-        if best_time then
-            print_centered(best_text, 70, 6)
-        end
-    elseif Game.game_state == "won" then
-        rectfill(0, 50, 128, 70, 0)
-        print_centered("all levels complete!", 54, 11)
-        print_centered("press \x97 to restart", 62, 7)
-    elseif Game.game_state == "lost" then
-        rectfill(0, 0, 128, 8, 1)
-        print_centered("press \x8e+<> to level skip", 2, 6, 0)
-        print_centered("press \x97 to restart", 20, color, 0)
-    end
-    self:draw_flash_animation()
-end
-
-function UIManager:trigger_flash_animation(y_offset, text)
-    if self.record_anim_stage > 0 then return end
-    self.record_anim_stage = 1
-    self.record_anim_timer = 0
-    self.record_anim_x = 128
-    self.record_anim_height = 1
-    self.record_anim_y_center = y_offset or 64
-    self.record_anim_width = 128
-    self.record_anim_text = text or ""
-end
-
-function UIManager:draw_flash_animation()
-    if self.record_anim_stage == 0 then return end
-
-    local y_center = self.record_anim_y_center or 64
-    local y_pos = y_center - self.record_anim_height / 2
-    local rect_color = 7
-
-    if self.record_anim_stage == 3 then
-        rect_color = 0
-    end
-
-    rectfill(self.record_anim_x, y_pos, self.record_anim_x + self.record_anim_width - 1, y_pos + self.record_anim_height - 1, rect_color)
-
-    if self.record_anim_stage == 3 then
-        local text = self.record_anim_text
-        local text_width = #text * 4
-        local text_y = y_center - 3 -- center text vertically
-
-        if self.record_anim_height >= 8 and self.record_anim_width >= text_width then
-            local pulse = sin(Game.t * 8) * 3 + 3 -- cycles through colors 0-6
-            local color = flr(pulse) + 8 -- colors 8-14 (bright colors)
-            if color > 14 then color = 8 + (color - 15) end
-            print_centered(text, text_y, color)
-        end
-    end
-end
 
 -->8
 -- HELPERS AND UTILS
@@ -1871,16 +1815,6 @@ function get_teleport_anim_sprite(tile)
         return meta.anim_base + anim_frame
     end
     return 0
-end
-
-function is_ball_drawn(p)
-    if not p then return false end
-    local s = (p.w or 0) / 1.8
-    return s > 0.5
-end
-
-function is_player_visible(p)
-    return p and not Game.level_cleared and not Game.level_transition and not Game:is_showing_messages() and is_ball_drawn(p)
 end
 
 function format_time(time_seconds)
