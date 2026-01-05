@@ -1268,13 +1268,7 @@ function Game:init()
     menuitem(2, "back to title", function() Game:restart() end)
 
     -- initialize tile count lookup table for quick destructible/teleport checks
-    self.tile_count_lookup = {}
-    for i = 0, 255 do
-        self.tile_count_lookup[i] = false
-    end
-    self.tile_count_lookup[1] = true
-    self.tile_count_lookup[2] = true
-    self.tile_count_lookup[3] = true
+    self.tile_count_lookup = { [1] = true, [2] = true, [3] = true }
     for t = 7, 14 do
         self.tile_count_lookup[t] = true
     end
