@@ -8,7 +8,7 @@ __lua__
 function _init()
     grid = {}
     w, h = 63, 58
-    total_cells = w * h
+    total_cells = (w + 1) * (h + 1)
     pct = 0
     level = 1
     max_levels = 7
@@ -24,19 +24,40 @@ function _init()
     p = { x = 32, y = 0, is_drawing = false }
     boss = { x = 32, y = 30, dx = 0.4, dy = 0.3, size = 3, hp = 5 }
     enemies = {}
+    spawn_enemies()
     shake = 0
     game_over = false
     win = false
 end
 
+function spawn_enemies()
+    enemies = {}
+    for i = 1, level + 1 do
+        local angle = rnd() * 2 * 3.14159
+        local dx = cos(angle) * 0.5
+        local dy = sin(angle) * 0.5
+        add(enemies, { x = rnd(w), y = rnd(h), dx = dx, dy = dy, size = 1 })
+    end
+end
+
 function _update()
     if game_over or win then
-        if btn(4) or btn(5) then run() end
+        if btnp(0) or btnp(1) or btnp(2) or btnp(3) or btnp(4) or btnp(5) then
+            if win then
+                next_level()
+                win = false
+            else
+                run()
+            end
+        end
         return
     end
 
     update_player()
     update_enemy(boss)
+    for e in all(enemies) do
+        update_enemy(e)
+    end
     if shake > 0 then shake -= 1 end
 
     if time() % 1 == 0 then calc_pct() end
@@ -79,6 +100,16 @@ function update_player()
 end
 
 function update_enemy(e)
+    if e.size == 1 and p.is_drawing then
+        -- chase player
+        local dx = p.x - e.x
+        local dy = p.y - e.y
+        local dist = sqrt(dx * dx + dy * dy)
+        if dist > 0 then
+            e.dx = (dx / dist) * 0.5
+            e.dy = (dy / dist) * 0.5
+        end
+    end
     local nx, ny = e.x + e.dx, e.y + e.dy
     -- bounce off anything that's not zero (1 or 4)
     if grid[mid(0, flr(nx), w)][flr(e.y)] != 0 then e.dx *= -1 end
@@ -118,7 +149,14 @@ function complete_area()
     -- if it only neighbors 4, it must become 4.
     fix_edges()
 
-    sfx(0)
+    -- step 5: remove enemies trapped in filled areas
+    for i = #enemies, 1, -1 do
+        local e = enemies[i]
+        if grid[flr(e.x)][flr(e.y)] == 4 then
+            deli(enemies, i)
+        end
+    end
+
     shake = 5
 end
 
@@ -162,16 +200,17 @@ function calc_pct()
     local count = 0
     for x = 0, w do
         for y = 0, h do
-            if grid[x][y] != 0 then count += 1 end
+            if grid[x][y] == 4 then count += 1 end
         end
     end
     pct = flr((count / total_cells) * 100)
 end
 
 function next_level()
+    win = false
     level += 1
     if level > max_levels then
-        print("gratulacje! ukonczyles gre!")
+        print("you win!", 40, 60, 11)
         stop()
     end
     -- reset grid
@@ -185,16 +224,12 @@ function next_level()
         end
     end
 
+    pct = 0
     p.x, p.y = 32, 0
     p.is_drawing = false
     boss.x, boss.y = 32, 30
-    enemies = {}
-
-    for i = 1, level + 1 do
-        add(enemies, { x = rnd(w), y = rnd(h), dx = 0.5, dy = 0.5, size = 1 })
-    end
-
-    sfx(5)
+    boss.hp = 5
+    spawn_enemies()
 end
 
 function _draw()
@@ -236,23 +271,26 @@ function _draw()
         end
     end
 
-    palt(15, false)
-    palt(0, true)
     draw_entities()
 
     rectfill(0, 118, 127, 127, 0)
     print("lvl:" .. (level - 1) .. " captured:" .. pct .. "%", 2, 120, 7)
     if win then
         print("level clear!", 40, 60, 11)
+        print("press any key to continue", 25, 70, 7)
     end
     if game_over then
         print("game over!", 45, 60, 8)
+        print("press any key to restart", 25, 70, 7)
     end
 end
 
 function draw_entities()
     local pulse = sin(time() * 2) * 1.5
     local b_col = 8
+
+    palt(15, false)
+    palt(0, true)
 
     if (boss.hp < 2) b_col = 14
     circfill(boss.x * 2, boss.y * 2, boss.size + pulse, b_col)
